@@ -137,6 +137,13 @@ jobs:
         working-directory: examples
         run: go build -v -o examples
 
+      - name: Upload Go example artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: examples
+          path: |
+            examples/examples
+
       - name: Run example (crash test & proxy test)
         working-directory: examples
         env:
