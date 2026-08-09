@@ -39,6 +39,7 @@ SHARED_INPUTS = (
     "scripts/prune_apple_compiler_builtins.py",
     "scripts/verify_apple_archive.py",
     "scripts/pins/quiche-0.17.1.Cargo.lock",
+    "scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock",
     "TrustTunnelClient/conanfile.py",
     "TrustTunnelClient/CMakeLists.txt",
     "TrustTunnelClient/trusttunnel/CMakeLists.txt",

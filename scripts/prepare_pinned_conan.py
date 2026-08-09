@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -23,6 +24,10 @@ QUICHE_VERSION = "0.17.1"
 QUICHE_SOURCE_COMMIT = "adca4bc48b2061e92cbc6faa4ec972da7e356b5b"
 QUICHE_LOCK_SHA256 = "8a84dc0a2e85ccb254002b5284f62be87817df5c40487a3cf197168973bc2836"
 QUICHE_LOCK = Path(__file__).resolve().parent / "pins" / "quiche-0.17.1.Cargo.lock"
+QUICHE_RING_017_LOCK_SHA256 = "6a188b3637389b8490c59f757fbaff1889a8fd2973e942df0722ccf568df77b2"
+QUICHE_RING_017_LOCK = (
+    Path(__file__).resolve().parent / "pins" / "quiche-0.17.1-ring-0.17.Cargo.lock"
+)
 TRUSTTUNNEL_DNS_REQUIREMENT = '        self.requires("dns-libs/2.8.52@adguard/oss", transitive_headers=True)\n'
 TRUSTTUNNEL_OLD_DNS_REQUIREMENT = '        self.requires("dns-libs/2.8.51@adguard/oss", transitive_headers=True)\n'
 LOCAL_COMPILER_SETTINGS = """
@@ -35,6 +40,8 @@ compiler:
     version: ["17"]
   clang:
     version: ["21"]
+  gcc:
+    version: ["15"]
 """
 NLC_SOURCE_METHOD = '''    def source(self):
         self.run(f"git init . && git remote add origin {self.vcs_url} && git fetch --tags")
@@ -60,6 +67,25 @@ PROVIDER_LOCK_GUARD_POINT = '''        get_property(_multiconfig_generator GLOBA
 '''
 PROVIDER_INSTALL_SUFFIX = "--build=missing ${generator})"
 PREPARATION_MODES = ("locked", "unlocked")
+LOCAL_LOCKED_RECIPE_REVISIONS = frozenset(
+    {
+        "dns-libs/2.8.52@adguard/oss#5c4d30444288f921af09be0cf58e5a7b",
+        "klib/2021-04-06@adguard/oss#d79c40384bfe661c91c75ad1615bff0d",
+        "ldns/2021-03-29@adguard/oss#fd1352e56cca9b0313c7f006f663e053",
+        "libevent/2.1.11@adguard/oss#edf6cb76089bedfecfc9b89015b12b20",
+        "libsodium/1.0.18@adguard/oss#812e2406acd49c4ba9a89a454b57315b",
+        "libuv/1.41.0@adguard/oss#1c1c2b1dfe58480a54ddf7a71a3ac806",
+        "llhttp/9.1.3@adguard/oss#73e3f4ea6b8b4ac39b0fa6e5b366a6f3",
+        "native_libs_common/8.1.28@adguard/oss#0a3bb2a7928302c6911c71c2fb6e5d17",
+        "nghttp2/1.56.0@adguard/oss#227b6065ed31c973828dff969ed60eac",
+        "nghttp3/1.0.0@adguard/oss#eebebee4f2e7e2f96ff6604c29ec9232",
+        "ngtcp2/1.0.1@adguard/oss#8df07ca7aeeba2cb52adad658ae8b357",
+        "openssl/boring-2024-09-13@adguard/oss#325eeda72477e4c1d1a18d607c8704c0",
+        "pcre2/10.37@adguard/oss#73864ed3c4d8e34486bc484dc3e133e4",
+        "quiche/0.17.1@adguard/oss#2ba3cfb4193aed42dcfd29b7396ae7f0",
+        "tldregistry/2022-12-26@adguard/oss#45b0964264aaf68f25514d9fa3f9558a",
+    }
+)
 
 
 class PreparationError(RuntimeError):
@@ -106,6 +132,23 @@ def validate_preparation_mode(mode: str) -> None:
             raise PreparationError("unlocked preparation forbids DOBBY_CONAN_LOCKFILE")
         return
     raise PreparationError("unknown Conan preparation mode")
+
+
+def validate_locked_local_recipes(lockfile: Path, exported: set[str]) -> None:
+    """Bind clean-cache local exports to timestamp-independent exact RREVs."""
+    try:
+        requires = json.loads(lockfile.read_text(encoding="utf-8"))["requires"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise PreparationError("Apple Conan graph lock is invalid") from error
+    if not isinstance(requires, list) or not all(isinstance(item, str) for item in requires):
+        raise PreparationError("Apple Conan graph lock requires are invalid")
+    local = {item for item in requires if "@adguard/oss#" in item}
+    if any("%" in item for item in local):
+        raise PreparationError("Apple Conan local recipe locks must not contain cache timestamps")
+    if local != LOCAL_LOCKED_RECIPE_REVISIONS:
+        raise PreparationError("Apple Conan local recipe lock revisions differ from pinned inputs")
+    if exported != LOCAL_LOCKED_RECIPE_REVISIONS:
+        raise PreparationError("exported Apple Conan recipe revisions differ from the graph lock")
 
 
 def prepare_default_conan_profile() -> None:
@@ -170,16 +213,28 @@ def pin_quiche_recipe(nlc: Path) -> None:
     lock = QUICHE_LOCK.read_bytes()
     if hashlib.sha256(lock).hexdigest() != QUICHE_LOCK_SHA256:
         raise PreparationError("tracked quiche Cargo lock differs from the pinned input")
+    ring_017_lock = QUICHE_RING_017_LOCK.read_bytes()
+    if hashlib.sha256(ring_017_lock).hexdigest() != QUICHE_RING_017_LOCK_SHA256:
+        raise PreparationError("tracked quiche ring 0.17 Cargo lock differs from the pinned input")
     lock_destination = recipe_directory / "Cargo.lock"
-    if lock_destination.exists() or lock_destination.is_symlink():
-        raise PreparationError("quiche recipe Cargo lock destination is not empty")
+    ring_017_lock_destination = recipe_directory / "Cargo-ring-0.17.lock"
+    for destination in (lock_destination, ring_017_lock_destination):
+        if destination.exists() or destination.is_symlink():
+            raise PreparationError("quiche recipe Cargo lock destination is not empty")
     lock_destination.write_bytes(lock)
+    ring_017_lock_destination.write_bytes(ring_017_lock)
 
     recipe = recipe_path.read_text(encoding="utf-8")
     recipe = replace_exact(
         recipe,
+        "from os.path import join\n",
+        "from os.path import join\nfrom shutil import copyfile\n",
+        "quiche recipe copyfile import",
+    )
+    recipe = replace_exact(
+        recipe,
         '    exports_sources = ["CMakeLists.txt", "patches/*"]\n',
-        '    exports_sources = ["CMakeLists.txt", "patches/*", "Cargo.lock"]\n',
+        '    exports_sources = ["CMakeLists.txt", "patches/*", "Cargo.lock", "Cargo-ring-0.17.lock"]\n',
         "quiche exported-source contract",
     )
     recipe = replace_exact(
@@ -198,6 +253,23 @@ def pin_quiche_recipe(nlc: Path) -> None:
         '        copy(self, "Cargo.lock", src=self.export_sources_folder, dst=join(self.source_folder, "source_subfolder"))\n',
         "quiche source checkout contract",
     )
+    for indentation in ("            ", "                "):
+        ring_upgrade = (
+            "\n"
+            + indentation
+            + 'replace_in_file(self, join(self.source_folder, "source_subfolder/quiche", '
+            + r'"Cargo.toml"), "ring = \"0.16\"", "ring = \"0.17\"")'
+            + "\n"
+        )
+        recipe = replace_exact(
+            recipe,
+            ring_upgrade,
+            ring_upgrade
+            + indentation
+            + 'copyfile(join(self.export_sources_folder, "Cargo-ring-0.17.lock"), '
+            'join(self.source_folder, "source_subfolder", "Cargo.lock"))\n',
+            "quiche ring 0.17 selection point",
+        )
     recipe = replace_exact(
         recipe,
         '        self.run("cd source_subfolder/quiche && cargo %s" % (cargo_args))\n',
@@ -292,11 +364,18 @@ def replace_generated_provider(nlc: Path, trusttunnel: Path) -> None:
     run(["conan", "config", "install", str(settings)])
 
 
-def export_recipe(recipe: Path, version: str | None = None) -> None:
+def export_recipe(recipe: Path, version: str | None = None) -> str:
     arguments = ["conan", "export", str(recipe), "--user", "adguard", "--channel", "oss"]
     if version is not None:
         arguments.extend(("--version", version))
-    run(arguments)
+    arguments.extend(("--format", "json", "-vquiet"))
+    try:
+        reference = json.loads(run(arguments))["reference"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise PreparationError("Conan export did not return an exact recipe reference") from error
+    if not isinstance(reference, str) or reference.count("#") != 1 or "%" in reference:
+        raise PreparationError("Conan export returned an invalid recipe reference")
+    return reference
 
 
 def prepare(trusttunnel: Path, mode: str) -> None:
@@ -316,11 +395,13 @@ def prepare(trusttunnel: Path, mode: str) -> None:
         pin_quiche_recipe(nlc)
         replace_generated_provider(nlc, trusttunnel)
         prepare_default_conan_profile()
-        export_recipe(nlc, NLC_VERSION)
+        exported = {export_recipe(nlc, NLC_VERSION)}
         recipes = nlc / "conan" / "recipes"
         for recipe in sorted(path for path in recipes.iterdir() if path.is_dir()):
-            export_recipe(recipe)
-        export_recipe(dns, DNSLIBS_VERSION)
+            exported.add(export_recipe(recipe))
+        exported.add(export_recipe(dns, DNSLIBS_VERSION))
+        if mode == "locked":
+            validate_locked_local_recipes(Path(os.environ["DOBBY_CONAN_LOCKFILE"]), exported)
 
 
 def main() -> int:

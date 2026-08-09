@@ -98,6 +98,7 @@ jobs:
             scripts/tests/test_package_release_assets.py \
             scripts/tests/test_prepare_pinned_conan.py \
             scripts/tests/test_prune_apple_compiler_builtins.py \
+            scripts/tests/test_repository_text_contract.py \
             scripts/tests/test_verify_apple_archive.py \
             scripts/tests/test_workflow_contracts.py
 

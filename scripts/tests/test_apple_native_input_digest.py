@@ -24,6 +24,7 @@ class AppleNativeInputDigestTests(unittest.TestCase):
             "scripts/prune_apple_compiler_builtins.py",
             "scripts/verify_apple_archive.py",
             "scripts/pins/quiche-0.17.1.Cargo.lock",
+            "scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock",
             "TrustTunnelClient/trusttunnel/Cargo.lock",
             "dobby_bridge/dobby_bridge_ios.mm",
         }

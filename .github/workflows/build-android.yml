@@ -82,14 +82,14 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-cargo
+          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-cargo
 
       - name: Conan cache
         uses: actions/cache@v5
         id: conan-cache
         with:
           path: ${{ runner.temp }}/dobby-conan-android-dynamic
-          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
+          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
       - name: Prepare pinned unlocked Conan recipes and provider
         run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked
@@ -116,7 +116,7 @@ jobs:
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/dobby-conan-android-dynamic
-          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
+          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient
@@ -223,14 +223,14 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-cargo
+          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-cargo
 
       - name: Conan cache
         uses: actions/cache@v5
         id: conan-cache
         with:
           path: ${{ runner.temp }}/dobby-conan-android-static
-          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
+          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
       - name: Prepare pinned unlocked Conan recipes and provider
         run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked
@@ -258,7 +258,7 @@ jobs:
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/dobby-conan-android-static
-          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
+          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient

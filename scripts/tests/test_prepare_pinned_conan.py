@@ -41,6 +41,55 @@ class PinnedConanPreparationTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {}, clear=True):
             MODULE.validate_preparation_mode("unlocked")
 
+    def test_tracked_apple_locks_bind_clean_cache_local_recipe_revisions(self) -> None:
+        pins = SCRIPT.parent / "pins" / "conan"
+        for name in ("apple-ios-arm64.lock", "apple-macos-arm64.lock"):
+            MODULE.validate_locked_local_recipes(
+                pins / name,
+                set(MODULE.LOCAL_LOCKED_RECIPE_REVISIONS),
+            )
+
+    def test_local_recipe_lock_rejects_cache_timestamps_and_export_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            lockfile = Path(temporary) / "apple.lock"
+            references = sorted(MODULE.LOCAL_LOCKED_RECIPE_REVISIONS)
+            lockfile.write_text(
+                '{"requires": [' + ",".join(f'"{reference}"' for reference in references) + "]}",
+                encoding="utf-8",
+            )
+            MODULE.validate_locked_local_recipes(lockfile, set(references))
+
+            lockfile.write_text(
+                '{"requires": ["' + references[0] + '%1.0"]}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(MODULE.PreparationError, "must not contain cache timestamps"):
+                MODULE.validate_locked_local_recipes(lockfile, set(references))
+
+            lockfile.write_text(
+                '{"requires": [' + ",".join(f'"{reference}"' for reference in references) + "]}",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(MODULE.PreparationError, "exported Apple Conan"):
+                MODULE.validate_locked_local_recipes(lockfile, set(references[1:]))
+            with self.assertRaisesRegex(MODULE.PreparationError, "exported Apple Conan"):
+                MODULE.validate_locked_local_recipes(
+                    lockfile,
+                    set(references) | {"unexpected/1.0@adguard/oss#0123456789abcdef"},
+                )
+
+    def test_recipe_export_returns_exact_revision_without_timestamp(self) -> None:
+        recipe = Path("recipe")
+        expected = "example/1.0@adguard/oss#0123456789abcdef"
+        with mock.patch.object(MODULE, "run", return_value=f'{{"reference": "{expected}"}}') as command:
+            self.assertEqual(MODULE.export_recipe(recipe, "1.0"), expected)
+        command.assert_called_once_with(
+            [
+                "conan", "export", str(recipe), "--user", "adguard", "--channel", "oss",
+                "--version", "1.0", "--format", "json", "-vquiet",
+            ]
+        )
+
     def test_prepares_default_conan_build_profile_explicitly(self) -> None:
         with mock.patch.object(MODULE, "run", return_value="") as command:
             MODULE.prepare_default_conan_profile()
@@ -129,7 +178,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             recipe_directory.mkdir(parents=True)
             recipe = recipe_directory / "conanfile.py"
             recipe.write_text(
-                'from conan.tools.files import copy\nfrom os.path import join\n\n'
+                'from conan.tools.files import copy, replace_in_file\nfrom os.path import join\n\n'
                 'class QuicheConan:\n'
                 f'    version = "{MODULE.QUICHE_VERSION}"\n'
                 '    exports_sources = ["CMakeLists.txt", "patches/*"]\n\n'
@@ -137,6 +186,11 @@ class PinnedConanPreparationTests(unittest.TestCase):
                 '        self.run("git clone https://github.com/cloudflare/quiche.git source_subfolder")\n'
                 '        self.run(f"cd source_subfolder && git checkout {self.version}")\n\n'
                 '    def build(self):\n'
+                '        if linux:\n'
+                '            replace_in_file(self, join(self.source_folder, "source_subfolder/quiche", "Cargo.toml"), "ring = \\"0.16\\"", "ring = \\"0.17\\"")\n'
+                '        if windows:\n'
+                '            if windows_arm64:\n'
+                '                replace_in_file(self, join(self.source_folder, "source_subfolder/quiche", "Cargo.toml"), "ring = \\"0.16\\"", "ring = \\"0.17\\"")\n'
                 '        self.run("cd source_subfolder/quiche && cargo %s" % (cargo_args))\n',
                 encoding="utf-8",
             )
@@ -155,11 +209,25 @@ class PinnedConanPreparationTests(unittest.TestCase):
                 generated,
             )
             self.assertNotIn("test $(git rev-parse HEAD)", generated)
+            self.assertIn("from shutil import copyfile", generated)
             self.assertIn('copy(self, "Cargo.lock"', generated)
+            self.assertEqual(generated.count('copyfile(join(self.export_sources_folder, "Cargo-ring-0.17.lock")'), 2)
             self.assertIn("cargo %s --locked", generated)
             self.assertEqual(
                 hashlib.sha256((recipe_directory / "Cargo.lock").read_bytes()).hexdigest(),
                 MODULE.QUICHE_LOCK_SHA256,
+            )
+            self.assertEqual(
+                hashlib.sha256((recipe_directory / "Cargo-ring-0.17.lock").read_bytes()).hexdigest(),
+                MODULE.QUICHE_RING_017_LOCK_SHA256,
+            )
+            self.assertIn(
+                'name = "ring"\nversion = "0.16.20"',
+                (recipe_directory / "Cargo.lock").read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                'name = "ring"\nversion = "0.17.14"',
+                (recipe_directory / "Cargo-ring-0.17.lock").read_text(encoding="utf-8"),
             )
 
     def test_pins_nested_native_libs_common_source_and_settings(self) -> None:
@@ -179,6 +247,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertIn("settings_file.write(", generated)
             self.assertIn('version: ["17"]', generated)
             self.assertIn('clang:\\n    version: ["21"]', generated)
+            self.assertIn('gcc:\\n    version: ["15"]', generated)
             self.assertNotIn("git fetch --tags", generated)
 
     def test_rejects_unexpected_native_libs_common_recipe(self) -> None:
@@ -229,6 +298,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertEqual((checkout / "cmake" / "conan_provider.cmake").read_text(), "provider\n")
             self.assertIn('version: ["17"]', settings.read_text(encoding="utf-8"))
             self.assertIn('clang:\n    version: ["21"]', settings.read_text(encoding="utf-8"))
+            self.assertIn('gcc:\n    version: ["15"]', settings.read_text(encoding="utf-8"))
             self.assertNotIn("self.conan_data", generated)
 
     def test_generated_provider_installs_supported_pinned_compiler_settings(self) -> None:
@@ -249,6 +319,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertEqual((trusttunnel / "cmake" / "conan_provider.cmake").read_text(), "provider\n")
             self.assertIn('apple-clang:\n    version: ["17"]', settings.read_text(encoding="utf-8"))
             self.assertIn('clang:\n    version: ["21"]', settings.read_text(encoding="utf-8"))
+            self.assertIn('gcc:\n    version: ["15"]', settings.read_text(encoding="utf-8"))
             command.assert_called_once_with(["conan", "config", "install", str(settings)])
 
 

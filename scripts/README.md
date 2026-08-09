@@ -25,6 +25,11 @@ provider which refuses every Conan install without it. Non-Apple workflows use
 `--mode unlocked` until their platform graph locks exist; that mode rejects a
 `DOBBY_CONAN_LOCKFILE` environment rather than silently using an accidental
 lock.
+The Apple locks retain exact public-remote revisions and exact locally
+exported recipe revisions, but deliberately omit cache timestamps from local
+references. Preparation verifies all 15 local recipe RREVs against the lock
+before CMake runs, so a clean cache works while stale or changed recipe content
+fails closed.
 The build script refuses to reuse a build directory. It preserves dependency
 cache archives, sanitizes only isolated iOS staging copies, verifies every
 non-index archive member's Apple platform and deployment target, and links a
@@ -44,6 +49,7 @@ python3 -m unittest \
   scripts/tests/test_package_release_assets.py \
   scripts/tests/test_prepare_pinned_conan.py \
   scripts/tests/test_prune_apple_compiler_builtins.py \
+  scripts/tests/test_repository_text_contract.py \
   scripts/tests/test_verify_apple_archive.py \
   scripts/tests/test_workflow_contracts.py
 ```
@@ -61,6 +67,12 @@ inputs, the selected workflow, and the Conan/Xcode/deployment/Rust contract.
 It reads neither local caches nor build outputs. Run it from a clean recursive
 checkout with the same arguments used by the workflow; any missing or dirty
 input is a failure rather than a cache fallback.
+
+Quiche keeps two immutable Cargo locks because its pinned Conan recipe upgrades
+`ring` from 0.16 to 0.17 only for Linux and Windows arm64. The base lock is used
+everywhere else; the ring-0.17 lock is selected immediately after that exact
+recipe edit. Both are hashed build inputs and every Cargo invocation remains
+`--locked`.
 
 ## Unlocked platform preparation
 

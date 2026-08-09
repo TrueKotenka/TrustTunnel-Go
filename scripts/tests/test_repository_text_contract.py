@@ -13,7 +13,7 @@ class RepositoryTextContractTests(unittest.TestCase):
         self.assertIn("/.github/workflows/** text eol=lf", attributes.splitlines())
         self.assertIn("/scripts/** text eol=lf", attributes.splitlines())
 
-    def test_quiche_lock_matches_the_pinned_byte_digest(self) -> None:
+    def test_quiche_locks_match_the_pinned_byte_digests(self) -> None:
         import hashlib
         import importlib.util
 
@@ -27,6 +27,10 @@ class RepositoryTextContractTests(unittest.TestCase):
         self.assertEqual(
             hashlib.sha256(module.QUICHE_LOCK.read_bytes()).hexdigest(),
             module.QUICHE_LOCK_SHA256,
+        )
+        self.assertEqual(
+            hashlib.sha256(module.QUICHE_RING_017_LOCK.read_bytes()).hexdigest(),
+            module.QUICHE_RING_017_LOCK_SHA256,
         )
 
 

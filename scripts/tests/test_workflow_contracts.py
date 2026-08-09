@@ -46,6 +46,7 @@ class WorkflowContractTests(unittest.TestCase):
             "test_package_release_assets.py",
             "test_prepare_pinned_conan.py",
             "test_prune_apple_compiler_builtins.py",
+            "test_repository_text_contract.py",
             "test_verify_apple_archive.py",
             "test_workflow_contracts.py",
         )
@@ -83,6 +84,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn("--mode unlocked", source, name)
             self.assertIn("scripts/prepare_pinned_conan.py", source, name)
             self.assertIn("scripts/pins/quiche-0.17.1.Cargo.lock", source, name)
+            self.assertIn("scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock", source, name)
             self.assertIn('toolchain: "1.85.0"', source, name)
             self.assertIn("conan --version", source, name)
             self.assertNotIn("bootstrap_conan_deps.py", source, name)
