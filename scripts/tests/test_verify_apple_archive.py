@@ -26,7 +26,53 @@ Load command 1
 """
 
 
+def archive_member(
+    payload: bytes,
+    *,
+    name: str = "bridge.o/",
+    date: int = 0,
+    uid: int = 0,
+    gid: int = 0,
+    mode: int = 0o100644,
+) -> bytes:
+    header = (
+        f"{name:<16}{date:<12}{uid:<6}{gid:<6}{mode:<8o}{len(payload):<10}`\n"
+    ).encode("ascii")
+    assert len(header) == MODULE.ARCHIVE_HEADER_SIZE
+    return header + payload + (b"\n" if len(payload) % 2 else b"")
+
+
 class AppleArchiveVerificationTests(unittest.TestCase):
+    def test_accepts_deterministic_metadata_for_every_archive_member(self) -> None:
+        raw = (
+            MODULE.ARCHIVE_MAGIC
+            + archive_member(b"index", name="__.SYMDEF")
+            + archive_member(b"object")
+        )
+        self.assertEqual(MODULE.verify_deterministic_archive(raw), 2)
+
+    def test_rejects_each_non_deterministic_archive_field(self) -> None:
+        for field, value in (
+            ("date", 1),
+            ("uid", 501),
+            ("gid", 20),
+            ("mode", 0o100600),
+        ):
+            with self.subTest(field=field):
+                raw = MODULE.ARCHIVE_MAGIC + archive_member(b"object", **{field: value})
+                with self.assertRaisesRegex(MODULE.VerificationError, "not deterministic"):
+                    MODULE.verify_deterministic_archive(raw)
+
+    def test_rejects_truncated_archive_member_data(self) -> None:
+        raw = MODULE.ARCHIVE_MAGIC + archive_member(b"object")[:-1]
+        with self.assertRaisesRegex(MODULE.VerificationError, "truncated|padding"):
+            MODULE.verify_deterministic_archive(raw)
+
+    def test_rejects_signed_archive_numeric_fields(self) -> None:
+        raw = MODULE.ARCHIVE_MAGIC + archive_member(b"object", date=-1)
+        with self.assertRaisesRegex(MODULE.VerificationError, "invalid date"):
+            MODULE.verify_deterministic_archive(raw)
+
     def test_accepts_every_member_at_or_below_limit(self) -> None:
         records = MODULE.parse_otool(metadata(2, "13.0", "a.o") + metadata(2, "15.6", "b.o"))
         MODULE.verify(records, "ios", "15.6")

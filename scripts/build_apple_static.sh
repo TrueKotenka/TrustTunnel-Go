@@ -202,8 +202,8 @@ fi
 
 mkdir -p "$output_directory"
 readonly merged="$build/libdobby_bridge-merged.a"
-libtool -static -o "$merged" "${merge_libraries[@]}"
-strip -S "$merged"
+libtool -static -D -o "$merged" "${merge_libraries[@]}"
+strip -S -D "$merged"
 install -m 0644 "$merged" "$output"
 python3 "$root/scripts/verify_apple_archive.py" \
   --archive "$output" \

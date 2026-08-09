@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject Apple static archives containing objects above the supported OS."""
+"""Reject non-reproducible Apple archives or objects above the supported OS."""
 
 from __future__ import annotations
 
@@ -16,6 +16,9 @@ VERSION = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*)){0,2}$")
 ARCHIVE_INDEX_MEMBERS = frozenset(
     {"/", "//", "/SYM64/", "__.SYMDEF", "__.SYMDEF SORTED"}
 )
+ARCHIVE_MAGIC = b"!<arch>\n"
+ARCHIVE_HEADER_SIZE = 60
+DETERMINISTIC_ARCHIVE_MODE = 0o100644
 
 
 class VerificationError(ValueError):
@@ -90,6 +93,50 @@ def parse_archive_members(output: str) -> list[str]:
     return members
 
 
+def _archive_number(field: bytes, base: int, name: str) -> int:
+    value = field.rstrip(b" ")
+    digits = b"01234567" if base == 8 else b"0123456789"
+    if not value or any(byte not in digits for byte in value):
+        raise VerificationError(f"archive contains an invalid {name} field")
+    return int(value, base)
+
+
+def verify_deterministic_archive(raw: bytes) -> int:
+    """Require canonical Apple libtool -D metadata on every archive member."""
+    if not raw.startswith(ARCHIVE_MAGIC):
+        raise VerificationError("archive magic is invalid")
+    offset = len(ARCHIVE_MAGIC)
+    members = 0
+    while offset < len(raw):
+        end = offset + ARCHIVE_HEADER_SIZE
+        if end > len(raw):
+            raise VerificationError("archive member header is truncated")
+        header = raw[offset:end]
+        if header[58:60] != b"`\n":
+            raise VerificationError("archive member header trailer is invalid")
+        date = _archive_number(header[16:28], 10, "date")
+        uid = _archive_number(header[28:34], 10, "uid")
+        gid = _archive_number(header[34:40], 10, "gid")
+        mode = _archive_number(header[40:48], 8, "mode")
+        size = _archive_number(header[48:58], 10, "size")
+        if date != 0 or uid != 0 or gid != 0 or mode != DETERMINISTIC_ARCHIVE_MODE:
+            raise VerificationError(
+                "archive member metadata is not deterministic "
+                f"(date={date} uid={uid} gid={gid} mode={mode:o})"
+            )
+        offset = end + size
+        if offset > len(raw):
+            raise VerificationError("archive member data is truncated")
+        if size % 2:
+            if offset >= len(raw) or raw[offset : offset + 1] != b"\n":
+                raise VerificationError("archive member padding is invalid")
+            offset += 1
+        members += 1
+    if members == 0:
+        raise VerificationError("archive contains no members")
+    return members
+
+
 def verify(
     records: list[MemberTarget],
     platform: str,
@@ -128,6 +175,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         archive = args.archive.resolve(strict=True)
+        deterministic_members = verify_deterministic_archive(archive.read_bytes())
         completed = subprocess.run(
             ["xcrun", "otool", "-l", str(archive)],
             check=True,
@@ -155,7 +203,8 @@ def main() -> int:
         return 1
     print(
         f"Apple archive verified platform={args.platform} "
-        f"maximum={args.maximum_deployment_target} members={len(records)}"
+        f"maximum={args.maximum_deployment_target} members={len(records)} "
+        f"deterministic-members={deterministic_members}"
     )
     return 0
 

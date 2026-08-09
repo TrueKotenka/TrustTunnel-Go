@@ -66,6 +66,11 @@ class AppleStaticBuildContractTests(unittest.TestCase):
         self.assertLess(verifier, privacy_scan)
         self.assertLess(privacy_scan, consumer)
 
+    def test_final_archive_uses_deterministic_apple_tools(self) -> None:
+        self.assertIn('libtool -static -D -o "$merged"', self.source)
+        self.assertIn('strip -S -D "$merged"', self.source)
+        self.assertNotIn('libtool -static -o "$merged"', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

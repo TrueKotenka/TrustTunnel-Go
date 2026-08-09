@@ -34,10 +34,12 @@ stale, changed, or duplicate graph recipe fails closed.
 The build script refuses to reuse a build directory. It preserves dependency
 cache archives, sanitizes only isolated iOS staging copies, verifies every
 non-index archive member's Apple platform and deployment target, and links a
-small Go consumer before succeeding. Compiler path remapping and a final
-archive scan prevent owner-local source, Conan, or Cargo paths from entering
-the published binaries. Preparation materializes the native Conan build
-profile before CMake configuration and applies the exact fail-closed
+small Go consumer before succeeding. Apple `libtool` and `strip` run in their
+deterministic `-D` modes, and the verifier requires canonical zero date, uid,
+gid, and mode metadata on every final archive member. Compiler path remapping
+and a final archive scan prevent owner-local source, Conan, or Cargo paths from
+entering the published binaries. Preparation materializes the native Conan
+build profile before CMake configuration and applies the exact fail-closed
 TrustTunnel DNS requirement represented by the checked Conan graph, so the
 documented local commands and hosted workflows share one build path.
 
