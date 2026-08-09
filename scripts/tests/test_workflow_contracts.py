@@ -182,6 +182,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("$effectiveProfile.host.conf.'tools.microsoft.msbuild:installation_path' -ne ''", source)
         self.assertIn('set(_COMPILER_VERSION "194")', preparation)
         self.assertIn("requires exact MSVC 19.51", preparation)
+        self.assertIn(
+            'CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL '
+            '"$<$<CONFIG:Release>:MultiThreaded>"',
+            preparation,
+        )
+        self.assertNotIn("CONFIG:Release>:MultiThreadedDLL", preparation)
         self.assertIn("tools.microsoft.msbuild:installation_path=", preparation)
         self.assertIn("--mode unlocked --msvc-195-compat", source)
 

@@ -367,6 +367,12 @@ def enforce_msvc_195_compat_provider(provider: Path) -> str:
         # Conan 2.12's CMakeToolchain mapping ends at 194. The real compiler
         # remains the exact CMake-bound MSVC 19.51 executable.
         set(_COMPILER_VERSION "194")
+        # Conan's single-config Release toolchain can emit this exact generator
+        # expression. Normalize only its static-Release equivalent; every other
+        # unknown runtime value still fails the provider's allow-list check.
+        if(CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "$<$<CONFIG:Release>:MultiThreaded>")
+            set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+        endif()
 ''',
         "MSVC compatibility identity insertion point",
     )

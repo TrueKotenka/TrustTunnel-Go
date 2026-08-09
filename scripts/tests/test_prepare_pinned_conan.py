@@ -198,6 +198,12 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertIn('set(_COMPILER_VERSION "194")', generated)
             self.assertIn("requires exact MSVC 19.51", generated)
             self.assertIn(
+                'CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "$<$<CONFIG:Release>:MultiThreaded>"',
+                generated,
+            )
+            self.assertIn('set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")', generated)
+            self.assertNotIn("CONFIG:Release>:MultiThreadedDLL", generated)
+            self.assertIn(
                 'string(APPEND PROFILE "tools.microsoft.msbuild:installation_path=\\n")',
                 generated,
             )
@@ -206,6 +212,11 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertIn("--- a/cmake/conan_provider.cmake", provider_patch)
             self.assertIn("+++ b/cmake/conan_provider.cmake", provider_patch)
             self.assertIn('+        set(_COMPILER_VERSION "194")', provider_patch)
+            self.assertIn(
+                '+        if(CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL '
+                '"$<$<CONFIG:Release>:MultiThreaded>")',
+                provider_patch,
+            )
 
     def test_windows_compatibility_rejects_locked_provider_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
