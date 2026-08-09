@@ -27,9 +27,10 @@ provider which refuses every Conan install without it. Non-Apple workflows use
 lock.
 The Apple locks retain exact public-remote revisions and exact locally
 exported recipe revisions, but deliberately omit cache timestamps from local
-references. Preparation verifies all 15 local recipe RREVs against the lock
-before CMake runs, so a clean cache works while stale or changed recipe content
-fails closed.
+references. Preparation verifies all 15 graph-relevant local recipe RREVs
+against the lock before CMake runs, while ignoring separately exported legacy
+or platform-only recipes. A clean cache therefore works while a missing,
+stale, changed, or duplicate graph recipe fails closed.
 The build script refuses to reuse a build directory. It preserves dependency
 cache archives, sanitizes only isolated iOS staging copies, verifies every
 non-index archive member's Apple platform and deployment target, and links a
@@ -84,6 +85,10 @@ absolute lock file and installs a provider that requires it for every Conan
 install. Until per-platform Conan graph locks are added, non-Apple package
 resolution is reproducible only to those exact prepared recipe/source inputs,
 not a fully locked binary dependency graph.
+Compiler versions used by the pinned hosted images but absent from Conan
+2.12.2's public settings (GCC 15, MSVC 195, Clang 21, and Apple Clang 17) are
+added through the same generated, hash-bound settings input. This neither
+upgrades Conan nor accepts other unpinned compiler versions.
 
 ## Updating tracked static libraries
 

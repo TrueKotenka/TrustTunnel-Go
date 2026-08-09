@@ -42,6 +42,8 @@ compiler:
     version: ["21"]
   gcc:
     version: ["15"]
+  msvc:
+    version: ["195"]
 """
 NLC_SOURCE_METHOD = '''    def source(self):
         self.run(f"git init . && git remote add origin {self.vcs_url} && git fetch --tags")
@@ -69,14 +71,14 @@ PROVIDER_INSTALL_SUFFIX = "--build=missing ${generator})"
 PREPARATION_MODES = ("locked", "unlocked")
 LOCAL_LOCKED_RECIPE_REVISIONS = frozenset(
     {
-        "dns-libs/2.8.52@adguard/oss#5c4d30444288f921af09be0cf58e5a7b",
+        "dns-libs/2.8.52@adguard/oss#a3a209eabfb980401d9c0b289d34beeb",
         "klib/2021-04-06@adguard/oss#d79c40384bfe661c91c75ad1615bff0d",
         "ldns/2021-03-29@adguard/oss#fd1352e56cca9b0313c7f006f663e053",
         "libevent/2.1.11@adguard/oss#edf6cb76089bedfecfc9b89015b12b20",
         "libsodium/1.0.18@adguard/oss#812e2406acd49c4ba9a89a454b57315b",
         "libuv/1.41.0@adguard/oss#1c1c2b1dfe58480a54ddf7a71a3ac806",
         "llhttp/9.1.3@adguard/oss#73e3f4ea6b8b4ac39b0fa6e5b366a6f3",
-        "native_libs_common/8.1.28@adguard/oss#0a3bb2a7928302c6911c71c2fb6e5d17",
+        "native_libs_common/8.1.28@adguard/oss#d52242835dc6201a501730e78f6dad41",
         "nghttp2/1.56.0@adguard/oss#227b6065ed31c973828dff969ed60eac",
         "nghttp3/1.0.0@adguard/oss#eebebee4f2e7e2f96ff6604c29ec9232",
         "ngtcp2/1.0.1@adguard/oss#8df07ca7aeeba2cb52adad658ae8b357",
@@ -147,8 +149,17 @@ def validate_locked_local_recipes(lockfile: Path, exported: set[str]) -> None:
         raise PreparationError("Apple Conan local recipe locks must not contain cache timestamps")
     if local != LOCAL_LOCKED_RECIPE_REVISIONS:
         raise PreparationError("Apple Conan local recipe lock revisions differ from pinned inputs")
-    if exported != LOCAL_LOCKED_RECIPE_REVISIONS:
-        raise PreparationError("exported Apple Conan recipe revisions differ from the graph lock")
+    locked_packages = {reference.split("#", 1)[0] for reference in LOCAL_LOCKED_RECIPE_REVISIONS}
+    graph_exports = {
+        reference for reference in exported if reference.split("#", 1)[0] in locked_packages
+    }
+    if graph_exports != LOCAL_LOCKED_RECIPE_REVISIONS:
+        missing = sorted(LOCAL_LOCKED_RECIPE_REVISIONS - graph_exports)
+        unexpected = sorted(graph_exports - LOCAL_LOCKED_RECIPE_REVISIONS)
+        raise PreparationError(
+            "exported Apple Conan recipe revisions differ from the graph lock: "
+            f"missing={missing!r} unexpected={unexpected!r}"
+        )
 
 
 def prepare_default_conan_profile() -> None:

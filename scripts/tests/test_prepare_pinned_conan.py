@@ -72,11 +72,15 @@ class PinnedConanPreparationTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(MODULE.PreparationError, "exported Apple Conan"):
                 MODULE.validate_locked_local_recipes(lockfile, set(references[1:]))
-            with self.assertRaisesRegex(MODULE.PreparationError, "exported Apple Conan"):
-                MODULE.validate_locked_local_recipes(
-                    lockfile,
-                    set(references) | {"unexpected/1.0@adguard/oss#0123456789abcdef"},
-                )
+            MODULE.validate_locked_local_recipes(
+                lockfile,
+                set(references) | {"auxiliary/1.0@adguard/oss#0123456789abcdef"},
+            )
+            replaced = set(references)
+            replaced.remove(references[0])
+            replaced.add(references[0].split("#", 1)[0] + "#0123456789abcdef")
+            with self.assertRaisesRegex(MODULE.PreparationError, "missing=.*unexpected="):
+                MODULE.validate_locked_local_recipes(lockfile, replaced)
 
     def test_recipe_export_returns_exact_revision_without_timestamp(self) -> None:
         recipe = Path("recipe")
@@ -248,6 +252,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertIn('version: ["17"]', generated)
             self.assertIn('clang:\\n    version: ["21"]', generated)
             self.assertIn('gcc:\\n    version: ["15"]', generated)
+            self.assertIn('msvc:\\n    version: ["195"]', generated)
             self.assertNotIn("git fetch --tags", generated)
 
     def test_rejects_unexpected_native_libs_common_recipe(self) -> None:
@@ -299,6 +304,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertIn('version: ["17"]', settings.read_text(encoding="utf-8"))
             self.assertIn('clang:\n    version: ["21"]', settings.read_text(encoding="utf-8"))
             self.assertIn('gcc:\n    version: ["15"]', settings.read_text(encoding="utf-8"))
+            self.assertIn('msvc:\n    version: ["195"]', settings.read_text(encoding="utf-8"))
             self.assertNotIn("self.conan_data", generated)
 
     def test_generated_provider_installs_supported_pinned_compiler_settings(self) -> None:
@@ -320,6 +326,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             self.assertIn('apple-clang:\n    version: ["17"]', settings.read_text(encoding="utf-8"))
             self.assertIn('clang:\n    version: ["21"]', settings.read_text(encoding="utf-8"))
             self.assertIn('gcc:\n    version: ["15"]', settings.read_text(encoding="utf-8"))
+            self.assertIn('msvc:\n    version: ["195"]', settings.read_text(encoding="utf-8"))
             command.assert_called_once_with(["conan", "config", "install", str(settings)])
 
 
