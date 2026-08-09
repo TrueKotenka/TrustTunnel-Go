@@ -94,6 +94,15 @@ before dependency resolution, so the generated Conan host profile is bound to
 `msvc.runtime=static` and `msvc.runtime_type=Release`. This matches the existing
 TrustTunnel and delivered bridge target settings instead of depending on an
 image-specific implicit default.
+Conan 2.12.2 accepts the detected MSVC 195 setting but its internal CMake
+toolchain mapping ends at 194. The Windows workflow therefore fails unless the
+actual hosted compiler and tools are MSVC 19.51 / 14.51, then applies the
+tracked `windows-msvc-195-compat.profile` after automatic detection to use the
+binary-compatible 194 package identity. The v145 compiler, linker, and static
+runtime still perform the real build. Repository tests forbid `/GL`, `/LTCG`,
+and CMake interprocedural optimization because those modes require an exact
+toolset match and would invalidate this narrow compatibility exception. Remove
+the exception when the pinned Conan implementation fully supports MSVC 195.
 
 ## Updating tracked static libraries
 

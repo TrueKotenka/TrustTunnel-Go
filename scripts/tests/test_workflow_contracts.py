@@ -145,6 +145,80 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('MSVC_RUNTIME_LIBRARY "MultiThreaded"', bridge)
         self.assertNotIn("MultiThreadedDLL", source + trusttunnel + bridge)
 
+    def test_windows_msvc_195_compatibility_is_narrow_and_fail_closed(self) -> None:
+        source = (WORKFLOWS / "build-windows.yml").read_text(encoding="utf-8")
+        profile_path = ROOT / "scripts" / "pins" / "conan" / "windows-msvc-195-compat.profile"
+        profile = profile_path.read_text(encoding="utf-8")
+        expected_profiles = (
+            "TrustTunnelClient/conan/profiles/windows-msvc.jinja;"
+            "auto-cmake;"
+            "${{ github.workspace }}/scripts/pins/conan/windows-msvc-195-compat.profile"
+        )
+
+        self.assertIn("Get-Command cl.exe -CommandType Application -ErrorAction Stop", source)
+        self.assertIn("Get-Command link.exe -CommandType Application -ErrorAction Stop", source)
+        self.assertIn("$compilerVersion -notmatch '^19\\.51\\.'", source)
+        self.assertIn("$linkerVersion -notmatch '^14\\.51\\.'", source)
+        self.assertIn("$env:VCToolsVersion -notmatch '^14\\.51\\.'", source)
+        self.assertIn("$compiler.Source -notmatch '\\\\Hostx64\\\\x64\\\\cl\\.exe$'", source)
+        self.assertIn("$linker.Source -notmatch '\\\\Hostx64\\\\x64\\\\link\\.exe$'", source)
+        self.assertIn(expected_profiles, source)
+        self.assertEqual(source.count("scripts/pins/conan/windows-msvc-195-compat.profile"), 6)
+        self.assertIn("(?m)^compiler\\.version=195\\r?$", source)
+        self.assertIn("$settings.'compiler.version' -ne '194'", source)
+        self.assertIn("$settings.'compiler.runtime' -ne 'static'", source)
+        self.assertIn("$settings.'compiler.runtime_type' -ne 'Release'", source)
+        self.assertEqual(profile.count("compiler.version=194"), 1)
+        self.assertIn("actual compiler", profile)
+        self.assertIn("/GL", profile)
+        self.assertIn("/LTCG", profile)
+        self.assertIn("CMake IPO", profile)
+
+    def test_windows_compatibility_contract_forbids_whole_program_optimization(self) -> None:
+        build_input_patterns = (
+            "CMakeLists.txt",
+            "CMakePresets.json",
+            "CMakeUserPresets.json",
+            "Makefile",
+            "*.bat",
+            "*.cmake",
+            "*.cmd",
+            "*.jinja",
+            "*.mk",
+            "*.profile",
+            "*.props",
+            "*.ps1",
+            "*.py",
+            "*.sh",
+            "*.targets",
+            "*.vcxproj",
+            "*.yaml",
+            "*.yml",
+        )
+        checked = {
+            path
+            for pattern in build_input_patterns
+            for path in ROOT.rglob(pattern)
+            if ".git" not in path.parts
+            and "tests" not in path.parts
+            and "integration-tests" not in path.parts
+        }
+        forbidden = (
+            "/gl",
+            "/ltcg",
+            "-flto",
+            "interprocedural_optimization",
+            "wholeprogramoptimization",
+        )
+        comment_prefixes = ("#", "//", "<!--", "*", "-->")
+        for path in checked:
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith(comment_prefixes):
+                    continue
+                folded = line.casefold()
+                for value in forbidden:
+                    self.assertNotIn(value, folded, f"{path}:{line_number}: {value}")
+
     def test_documentation_marks_non_apple_conan_graphs_unlocked(self) -> None:
         source = (ROOT / "scripts" / "README.md").read_text(encoding="utf-8")
         self.assertIn("--mode locked", source)
