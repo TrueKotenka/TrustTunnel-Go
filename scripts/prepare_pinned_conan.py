@@ -25,13 +25,16 @@ QUICHE_LOCK_SHA256 = "8a84dc0a2e85ccb254002b5284f62be87817df5c40487a3cf197168973
 QUICHE_LOCK = Path(__file__).resolve().parent / "pins" / "quiche-0.17.1.Cargo.lock"
 TRUSTTUNNEL_DNS_REQUIREMENT = '        self.requires("dns-libs/2.8.52@adguard/oss", transitive_headers=True)\n'
 TRUSTTUNNEL_OLD_DNS_REQUIREMENT = '        self.requires("dns-libs/2.8.51@adguard/oss", transitive_headers=True)\n'
-APPLE_CLANG_SETTINGS = """
+LOCAL_COMPILER_SETTINGS = """
 
-# Conan 2.12 predates Xcode 26.3. Keep the supported compiler extension local
-# to this exact build input instead of accepting an unpinned Conan upgrade.
+# Conan 2.12 does not yet list every compiler used by the pinned public build
+# contract. Keep these narrow extensions in the exact build input instead of
+# accepting an unpinned Conan upgrade.
 compiler:
   apple-clang:
     version: ["17"]
+  clang:
+    version: ["21"]
 """
 NLC_SOURCE_METHOD = '''    def source(self):
         self.run(f"git init . && git remote add origin {self.vcs_url} && git fetch --tags")
@@ -143,13 +146,14 @@ def pin_nested_recipe_source(
         raise PreparationError(f"{dependency} source method differs from the pinned input")
     settings_injection = f'''        settings_path = join(self.source_folder, "conan", "settings_user.yml")
         with open(settings_path, "a", encoding="utf-8") as settings_file:
-            settings_file.write({APPLE_CLANG_SETTINGS!r})
+            settings_file.write({LOCAL_COMPILER_SETTINGS!r})
 ''' if append_settings else ""
     replacement = f'''    def source(self):
         self.run("git init . && git remote add origin {{}}".format(self.vcs_url))
         self.run("git fetch --depth 1 origin {source_commit}")
         self.run("git checkout -f {source_commit}")
-        self.run("test $(git rev-parse HEAD) = {source_commit}")
+        self.run("git merge-base --is-ancestor {source_commit} HEAD")
+        self.run("git merge-base --is-ancestor HEAD {source_commit}")
 {settings_injection}        for p in self.patch_files:
             patch(self, patch_file=p)
 '''
@@ -189,7 +193,8 @@ def pin_quiche_recipe(nlc: Path) -> None:
         recipe,
         '        self.run(f"cd source_subfolder && git checkout {self.version}")\n',
         f'        self.run("cd source_subfolder && git checkout --detach {QUICHE_SOURCE_COMMIT}")\n'
-        f'        self.run("cd source_subfolder && test $(git rev-parse HEAD) = {QUICHE_SOURCE_COMMIT}")\n'
+        f'        self.run("cd source_subfolder && git merge-base --is-ancestor {QUICHE_SOURCE_COMMIT} HEAD")\n'
+        f'        self.run("cd source_subfolder && git merge-base --is-ancestor HEAD {QUICHE_SOURCE_COMMIT}")\n'
         '        copy(self, "Cargo.lock", src=self.export_sources_folder, dst=join(self.source_folder, "source_subfolder"))\n',
         "quiche source checkout contract",
     )
@@ -248,7 +253,7 @@ def pin_dns_libs_recipe(dns: Path, nlc: Path) -> None:
     shutil.copy2(provider_source, provider)
     shutil.copytree(settings_source, settings_directory)
     settings = settings_directory / "settings_user.yml"
-    settings.write_text(settings.read_text(encoding="utf-8") + APPLE_CLANG_SETTINGS, encoding="utf-8")
+    settings.write_text(settings.read_text(encoding="utf-8") + LOCAL_COMPILER_SETTINGS, encoding="utf-8")
     recipe_path = dns / "conanfile.py"
     recipe = recipe_path.read_text(encoding="utf-8")
     exports = "    exports_sources = patch_files\n"
@@ -281,7 +286,7 @@ def replace_generated_provider(nlc: Path, trusttunnel: Path) -> None:
     shutil.copy2(provider_source, provider_destination)
     shutil.copytree(settings_source, settings_destination)
     settings = settings_destination / "settings_user.yml"
-    settings.write_text(settings.read_text(encoding="utf-8") + APPLE_CLANG_SETTINGS, encoding="utf-8")
+    settings.write_text(settings.read_text(encoding="utf-8") + LOCAL_COMPILER_SETTINGS, encoding="utf-8")
     if hashlib.sha256(provider_destination.read_bytes()).digest() != hashlib.sha256(provider_source.read_bytes()).digest():
         raise PreparationError("copied Conan provider failed verification")
     run(["conan", "config", "install", str(settings)])
@@ -326,7 +331,10 @@ def main() -> int:
     try:
         prepare(args.trusttunnel.resolve(strict=True), args.mode)
     except (OSError, PreparationError, subprocess.CalledProcessError) as error:
-        print(f"error: pinned Conan preparation failed: {type(error).__name__}")
+        print(
+            "error: pinned Conan preparation failed: "
+            f"{type(error).__name__}: {error}"
+        )
         return 1
     print(
         "pinned Conan inputs prepared "

@@ -103,6 +103,8 @@ jobs:
         working-directory: TrustTunnelClient
         run: |
           PREFIX_FLAGS="-ffile-prefix-map=$GITHUB_WORKSPACE=/dobbyvpn/source -ffile-prefix-map=$CONAN_HOME=/dobbyvpn/conan"
+          export CFLAGS="$PREFIX_FLAGS"
+          export CXXFLAGS="$PREFIX_FLAGS"
           export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/dobbyvpn/source --remap-path-prefix=$CONAN_HOME=/dobbyvpn/conan --remap-path-prefix=$HOME/.cargo=/dobbyvpn/cargo --remap-path-prefix=$HOME/.rustup=/dobbyvpn/rustup"
           mkdir -p $BUILD_DIR && cd $BUILD_DIR && \
           cmake -DCMAKE_BUILD_TYPE=Release \
@@ -237,10 +239,7 @@ jobs:
           path: ${{ runner.temp }}/dobby-conan-macos-static
           key: macos-static-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
-      - name: Prepare pinned Conan recipes and provider
-        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode locked
-
-      - name: Build and verify static macOS bridge
+      - name: Verify Apple static tooling on pristine checkout
         run: |
           python3 -m unittest \
             scripts/tests/test_apple_native_input_digest.py \
@@ -250,7 +249,12 @@ jobs:
             scripts/tests/test_prune_apple_compiler_builtins.py \
             scripts/tests/test_verify_apple_archive.py \
             scripts/tests/test_workflow_contracts.py
-          scripts/build_apple_static.sh macos
+
+      - name: Prepare pinned Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode locked
+
+      - name: Build and verify static macOS bridge
+        run: scripts/build_apple_static.sh macos
 
       - name: Save conan cache
         uses: actions/cache/save@v5

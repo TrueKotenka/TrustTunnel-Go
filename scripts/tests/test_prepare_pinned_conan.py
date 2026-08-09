@@ -146,7 +146,15 @@ class PinnedConanPreparationTests(unittest.TestCase):
             generated = recipe.read_text(encoding="utf-8")
             self.assertIn(f"git fetch --depth 1 origin {MODULE.QUICHE_SOURCE_COMMIT}", generated)
             self.assertIn(f"git checkout --detach {MODULE.QUICHE_SOURCE_COMMIT}", generated)
-            self.assertIn("test $(git rev-parse HEAD)", generated)
+            self.assertIn(
+                f"git merge-base --is-ancestor {MODULE.QUICHE_SOURCE_COMMIT} HEAD",
+                generated,
+            )
+            self.assertIn(
+                f"git merge-base --is-ancestor HEAD {MODULE.QUICHE_SOURCE_COMMIT}",
+                generated,
+            )
+            self.assertNotIn("test $(git rev-parse HEAD)", generated)
             self.assertIn('copy(self, "Cargo.lock"', generated)
             self.assertIn("cargo %s --locked", generated)
             self.assertEqual(
@@ -165,8 +173,12 @@ class PinnedConanPreparationTests(unittest.TestCase):
             generated = recipe.read_text(encoding="utf-8")
             self.assertIn(f"git fetch --depth 1 origin {MODULE.NLC_COMMIT}", generated)
             self.assertIn(f"git checkout -f {MODULE.NLC_COMMIT}", generated)
+            self.assertIn(f"git merge-base --is-ancestor {MODULE.NLC_COMMIT} HEAD", generated)
+            self.assertIn(f"git merge-base --is-ancestor HEAD {MODULE.NLC_COMMIT}", generated)
+            self.assertNotIn("test $(git rev-parse HEAD)", generated)
             self.assertIn("settings_file.write(", generated)
             self.assertIn('version: ["17"]', generated)
+            self.assertIn('clang:\\n    version: ["21"]', generated)
             self.assertNotIn("git fetch --tags", generated)
 
     def test_rejects_unexpected_native_libs_common_recipe(self) -> None:
@@ -203,11 +215,41 @@ class PinnedConanPreparationTests(unittest.TestCase):
             generated = recipe.read_text(encoding="utf-8")
             self.assertIn(f"git fetch --depth 1 origin {MODULE.DNSLIBS_SOURCE_COMMIT}", generated)
             self.assertIn(f"git checkout -f {MODULE.DNSLIBS_SOURCE_COMMIT}", generated)
+            self.assertIn(
+                f"git merge-base --is-ancestor {MODULE.DNSLIBS_SOURCE_COMMIT} HEAD",
+                generated,
+            )
+            self.assertIn(
+                f"git merge-base --is-ancestor HEAD {MODULE.DNSLIBS_SOURCE_COMMIT}",
+                generated,
+            )
+            self.assertNotIn("test $(git rev-parse HEAD)", generated)
             self.assertIn('exports_sources = patch_files + ["cmake/conan_provider.cmake", "conan/*"]', generated)
             self.assertNotIn("settings_file.write(", generated)
             self.assertEqual((checkout / "cmake" / "conan_provider.cmake").read_text(), "provider\n")
             self.assertIn('version: ["17"]', settings.read_text(encoding="utf-8"))
+            self.assertIn('clang:\n    version: ["21"]', settings.read_text(encoding="utf-8"))
             self.assertNotIn("self.conan_data", generated)
+
+    def test_generated_provider_installs_supported_pinned_compiler_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            native = root / "native"
+            trusttunnel = root / "trusttunnel"
+            (native / "cmake").mkdir(parents=True)
+            (native / "cmake" / "conan_provider.cmake").write_text("provider\n", encoding="utf-8")
+            (native / "conan").mkdir()
+            (native / "conan" / "settings_user.yml").write_text("arch: [mipsel]\n", encoding="utf-8")
+            (trusttunnel / "cmake").mkdir(parents=True)
+
+            with mock.patch.object(MODULE, "run", return_value="") as command:
+                MODULE.replace_generated_provider(native, trusttunnel)
+
+            settings = (trusttunnel / "conan" / "settings_user.yml")
+            self.assertEqual((trusttunnel / "cmake" / "conan_provider.cmake").read_text(), "provider\n")
+            self.assertIn('apple-clang:\n    version: ["17"]', settings.read_text(encoding="utf-8"))
+            self.assertIn('clang:\n    version: ["21"]', settings.read_text(encoding="utf-8"))
+            command.assert_called_once_with(["conan", "config", "install", str(settings)])
 
 
 if __name__ == "__main__":

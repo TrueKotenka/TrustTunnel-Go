@@ -90,10 +90,7 @@ jobs:
           path: ${{ runner.temp }}/dobby-conan-ios
           key: ios-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
-      - name: Prepare pinned Conan recipes and provider
-        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode locked
-
-      - name: Build and verify iOS bridge
+      - name: Verify Apple static tooling on pristine checkout
         run: |
           python3 -m unittest \
             scripts/tests/test_apple_native_input_digest.py \
@@ -103,7 +100,12 @@ jobs:
             scripts/tests/test_prune_apple_compiler_builtins.py \
             scripts/tests/test_verify_apple_archive.py \
             scripts/tests/test_workflow_contracts.py
-          scripts/build_apple_static.sh ios
+
+      - name: Prepare pinned Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode locked
+
+      - name: Build and verify iOS bridge
+        run: scripts/build_apple_static.sh ios
 
       - name: Save conan cache
         uses: actions/cache/save@v5

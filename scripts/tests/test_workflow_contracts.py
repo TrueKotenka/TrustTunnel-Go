@@ -29,6 +29,8 @@ class WorkflowContractTests(unittest.TestCase):
             "-DCARGO_EXTRA_ARGS=--locked",
             "-ffile-prefix-map=$GITHUB_WORKSPACE=/dobbyvpn/source",
             "--remap-path-prefix=$CONAN_HOME=/dobbyvpn/conan",
+            'export CFLAGS="$PREFIX_FLAGS"',
+            'export CXXFLAGS="$PREFIX_FLAGS"',
             "lipo -archs lib/macos/libdobby_bridge.dylib",
             "vtool -show-build lib/macos/libdobby_bridge.dylib",
             "^[[:space:]]*minos[[:space:]]+15(\\.0+)?[[:space:]]*$",
@@ -49,8 +51,19 @@ class WorkflowContractTests(unittest.TestCase):
         )
         for name in ("build-ios.yml", "build-macos.yml"):
             source = (WORKFLOWS / name).read_text(encoding="utf-8")
+            static_source = source if name == "build-ios.yml" else source[source.index("macos-arm64-static:"):]
             for suite in suites:
-                self.assertIn(suite, source, f"{name}: {suite}")
+                self.assertIn(suite, static_source, f"{name}: {suite}")
+            self.assertLess(
+                static_source.index("Verify Apple static tooling on pristine checkout"),
+                static_source.index("Prepare pinned Conan recipes and provider"),
+                name,
+            )
+            self.assertLess(
+                static_source.index("Prepare pinned Conan recipes and provider"),
+                static_source.index("scripts/build_apple_static.sh"),
+                name,
+            )
 
     def test_apple_workflows_explicitly_prepare_guarded_conan_providers(self) -> None:
         for name in ("build-ios.yml", "build-macos.yml"):
