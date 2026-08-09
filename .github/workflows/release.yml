@@ -228,6 +228,8 @@ jobs:
         run: |
           set -euo pipefail
           tag_object=""
+          draft_created=false
+          owned_release_id=""
           published=false
 
           exact_release() {
@@ -251,6 +253,22 @@ jobs:
                 end'
           }
 
+          wait_for_exact_release() {
+            local expected_draft="${1:-any}"
+            local attempt
+            local record
+            for attempt in {1..30}; do
+              if record="$(exact_release)" && [[ -n "$record" ]]; then
+                if [[ "$expected_draft" == any || "$(jq -r .draft <<<"$record")" == "$expected_draft" ]]; then
+                  printf '%s\n' "$record"
+                  return 0
+                fi
+              fi
+              sleep 1
+            done
+            return 1
+          }
+
           verify_owned_remote_tag() {
             local remote_tag_object
             local remote_target
@@ -268,23 +286,38 @@ jobs:
             fi
             set +e
 
-            release_record="$(exact_release)"
-            release_query_status=$?
             safe_to_delete_tag=false
-            if (( release_query_status != 0 )); then
-              echo "warning: could not determine rollback release ownership" >&2
-            elif [[ -z "$release_record" ]]; then
-              safe_to_delete_tag=true
-            elif [[ "$(jq -r .draft <<<"$release_record")" == true ]]; then
-              release_id="$(jq -r .id <<<"$release_record")"
-              if [[ "$release_id" =~ ^[1-9][0-9]*$ ]] && \
-                 gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"; then
+            if [[ "$draft_created" == true ]]; then
+              if [[ ! "$owned_release_id" =~ ^[1-9][0-9]*$ ]]; then
+                release_record="$(wait_for_exact_release any)"
+                release_query_status=$?
+                if (( release_query_status == 0 )); then
+                  owned_release_id="$(jq -r .id <<<"$release_record")"
+                fi
+              fi
+              if [[ "$owned_release_id" =~ ^[1-9][0-9]*$ ]]; then
+                release_record="$(gh api "repos/$GITHUB_REPOSITORY/releases/$owned_release_id")"
+              else
+                release_record=""
+              fi
+              if [[ "$owned_release_id" =~ ^[1-9][0-9]*$ ]] && \
+                 [[ "$(jq -r .tag_name <<<"$release_record")" == "$RELEASE_TAG" ]] && \
+                 [[ "$(jq -r .draft <<<"$release_record")" == true ]] && \
+                 gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$owned_release_id"; then
                 safe_to_delete_tag=true
               else
                 echo "warning: failed to roll back owned draft release $RELEASE_TAG" >&2
               fi
             else
-              echo "warning: refusing to roll back public release $RELEASE_TAG" >&2
+              release_record="$(exact_release)"
+              release_query_status=$?
+              if (( release_query_status != 0 )); then
+                echo "warning: could not determine rollback release ownership" >&2
+              elif [[ -z "$release_record" ]]; then
+                safe_to_delete_tag=true
+              else
+                echo "warning: refusing to roll back a release not created by this run" >&2
+              fi
             fi
 
             if [[ "$safe_to_delete_tag" == true && -n "$tag_object" ]]; then
@@ -330,7 +363,16 @@ jobs:
             --draft \
             --verify-tag \
             --title "$RELEASE_TAG" \
-            --notes "go-go-tunnel $RELEASE_TAG built from $SOURCE_SHA" \
+            --notes "go-go-tunnel $RELEASE_TAG built from $SOURCE_SHA"
+          draft_created=true
+          release_record="$(wait_for_exact_release true)"
+          owned_release_id="$(jq -r .id <<<"$release_record")"
+          [[ "$owned_release_id" =~ ^[1-9][0-9]*$ ]]
+          test "$(jq -r .draft <<<"$release_record")" = true
+          test "$(jq -r .tag_name <<<"$release_record")" = "$RELEASE_TAG"
+          verify_owned_remote_tag
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
             release/dobby_bridge-windows-x86_64.zip \
             release/libdobby_bridge-linux-x86_64.zip \
             release/libdobby_bridge-android-arm64-v8a.zip \
@@ -339,11 +381,6 @@ jobs:
             release/libdobby_bridge-macos-arm64.zip \
             release/libdobby_bridge-macos-arm64-static.zip \
             release/release-assets.manifest.json
-          release_record="$(exact_release)"
-          test -n "$release_record"
-          test "$(jq -r .draft <<<"$release_record")" = true
-          test "$(jq -r .tag_name <<<"$release_record")" = "$RELEASE_TAG"
-          verify_owned_remote_tag
           mkdir published
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir published --pattern '*'
           cmp release/release-assets.manifest.json published/release-assets.manifest.json
@@ -354,8 +391,8 @@ jobs:
           verify_owned_remote_tag
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           published=true
-          release_record="$(exact_release)"
-          test -n "$release_record"
+          release_record="$(wait_for_exact_release false)"
+          test "$(jq -r .id <<<"$release_record")" = "$owned_release_id"
           test "$(jq -r .draft <<<"$release_record")" = false
           test "$(jq -r .tag_name <<<"$release_record")" = "$RELEASE_TAG"
           verify_owned_remote_tag
