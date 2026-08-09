@@ -165,6 +165,9 @@ jobs:
           if ($settings.'compiler.version' -ne '194') { throw "Effective Conan compatibility identity is not 194" }
           if ($settings.'compiler.runtime' -ne 'static') { throw "Effective Conan runtime is not static" }
           if ($settings.'compiler.runtime_type' -ne 'Release') { throw "Effective Conan runtime type is not Release" }
+          if ($effectiveProfile.host.conf.'tools.microsoft.msbuild:installation_path' -ne '') {
+            throw "Effective Conan profile must disable redundant Visual Studio activation"
+          }
           $conanCompilers = $effectiveProfile.host.conf.'tools.build:compiler_executables'
           Assert-SamePath 'Conan C compiler' $conanCompilers.c $env:DOBBY_MSVC_COMPILER
           Assert-SamePath 'Conan CXX compiler' $conanCompilers.cpp $env:DOBBY_MSVC_COMPILER

@@ -103,6 +103,10 @@ runtime still perform the real build. Repository tests forbid `/GL`, `/LTCG`,
 and CMake interprocedural optimization because those modes require an exact
 toolset match and would invalidate this narrow compatibility exception. Remove
 the exception when the pinned Conan implementation fully supports MSVC 195.
+The workflow has already activated and absolute-path-bound the verified v145
+tools, so the compatibility profile disables Conan's redundant Visual Studio
+environment generation. This prevents Conan 2.12 from treating package
+identity 194 as a request to find or reactivate Visual Studio 17 / v143.
 
 ## Updating tracked static libraries
 

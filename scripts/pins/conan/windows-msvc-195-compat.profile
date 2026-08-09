@@ -10,6 +10,12 @@
 # This exception is unsafe with /GL, /LTCG, or CMake IPO. Repository tests fail
 # if those flags are introduced. Remove this profile when Conan is upgraded to
 # a version whose complete toolchain implementation supports msvc/195.
+# The workflow has already activated and bound the exact v145 environment.
+# Disable Conan's redundant VCVars generation so identity 194 cannot make
+# Conan 2.12 search for or reactivate a Visual Studio 17 / v143 installation.
 
 [settings]
 compiler.version=194
+
+[conf]
+tools.microsoft.msbuild:installation_path=
