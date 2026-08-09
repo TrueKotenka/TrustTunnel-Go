@@ -78,7 +78,7 @@ jobs:
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/conan/windows-msvc-195-compat.profile', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-ccache
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-ccache
 
       - name: Cargo cache
         uses: actions/cache@v5
@@ -88,17 +88,17 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/conan/windows-msvc-195-compat.profile', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-cargo
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-cargo
 
       - name: Conan cache
         uses: actions/cache@v5
         id: conan-cache
         with:
           path: ${{ runner.temp }}/dobby-conan-windows
-          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/conan/windows-msvc-195-compat.profile', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-conan
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-conan
 
       - name: Prepare pinned unlocked Conan recipes and provider
-        run: python scripts\prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked
+        run: python scripts\prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked --msvc-195-compat
 
       - name: Prepare dobby_bridge build
         run: |
@@ -114,7 +114,6 @@ jobs:
             -DCMAKE_CXX_COMPILER="$env:DOBBY_MSVC_COMPILER" `
             -DCMAKE_LINKER="$env:DOBBY_MSVC_LINKER" `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
-            -DCONAN_HOST_PROFILE="${{ github.workspace }}/TrustTunnelClient/conan/profiles/windows-msvc.jinja;auto-cmake;${{ github.workspace }}/scripts/pins/conan/windows-msvc-195-compat.profile" `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
             -DIPV6_UNAVAILABLE=ON `
@@ -146,7 +145,7 @@ jobs:
           $autoProfile = Get-Content -LiteralPath $autoProfilePath -Raw
           foreach ($required in @(
             '(?m)^compiler=msvc\r?$',
-            '(?m)^compiler\.version=195\r?$',
+            '(?m)^compiler\.version=194\r?$',
             '(?m)^compiler\.runtime=static\r?$',
             '(?m)^compiler\.runtime_type=Release\r?$'
           )) {
@@ -155,7 +154,6 @@ jobs:
           $profileJson = conan profile show `
             --profile:host="${{ github.workspace }}/TrustTunnelClient/conan/profiles/windows-msvc.jinja" `
             --profile:host="$autoProfilePath" `
-            --profile:host="${{ github.workspace }}/scripts/pins/conan/windows-msvc-195-compat.profile" `
             --profile:build=default `
             --format=json
           if ($LASTEXITCODE -ne 0) { throw "Unable to compose the effective Conan profiles" }
@@ -177,7 +175,7 @@ jobs:
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/dobby-conan-windows
-          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/conan/windows-msvc-195-compat.profile', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-conan
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'scripts/pins/quiche-0.17.1-ring-0.17.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient

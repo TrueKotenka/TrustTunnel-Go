@@ -147,13 +147,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_windows_msvc_195_compatibility_is_narrow_and_fail_closed(self) -> None:
         source = (WORKFLOWS / "build-windows.yml").read_text(encoding="utf-8")
-        profile_path = ROOT / "scripts" / "pins" / "conan" / "windows-msvc-195-compat.profile"
-        profile = profile_path.read_text(encoding="utf-8")
-        expected_profiles = (
-            "TrustTunnelClient/conan/profiles/windows-msvc.jinja;"
-            "auto-cmake;"
-            "${{ github.workspace }}/scripts/pins/conan/windows-msvc-195-compat.profile"
-        )
+        preparation = (ROOT / "scripts" / "prepare_pinned_conan.py").read_text(encoding="utf-8")
 
         self.assertIn("Join-Path $env:VCToolsInstallDir 'bin\\Hostx64\\x64\\cl.exe'", source)
         self.assertIn("Join-Path $env:VCToolsInstallDir 'bin\\Hostx64\\x64\\link.exe'", source)
@@ -178,20 +172,22 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("Get-CMakeCachePath 'CMAKE_LINKER'", source)
         self.assertIn("Assert-SamePath 'Conan C compiler' $conanCompilers.c", source)
         self.assertIn("Assert-SamePath 'Conan CXX compiler' $conanCompilers.cpp", source)
-        self.assertIn(expected_profiles, source)
-        self.assertEqual(source.count("scripts/pins/conan/windows-msvc-195-compat.profile"), 6)
-        self.assertIn("(?m)^compiler\\.version=195\\r?$", source)
+        self.assertNotIn("-DCONAN_HOST_PROFILE=", source)
+        self.assertNotIn("windows-msvc-195-compat.profile", source + preparation)
+        self.assertEqual(source.count("--msvc-195-compat"), 1)
+        self.assertIn("(?m)^compiler\\.version=194\\r?$", source)
         self.assertIn("$settings.'compiler.version' -ne '194'", source)
         self.assertIn("$settings.'compiler.runtime' -ne 'static'", source)
         self.assertIn("$settings.'compiler.runtime_type' -ne 'Release'", source)
         self.assertIn("$effectiveProfile.host.conf.'tools.microsoft.msbuild:installation_path' -ne ''", source)
-        self.assertEqual(profile.count("compiler.version=194"), 1)
-        self.assertEqual(profile.count("tools.microsoft.msbuild:installation_path="), 1)
-        self.assertIn("actual compiler", profile)
-        self.assertIn("Disable Conan's redundant VCVars generation", profile)
-        self.assertIn("/GL", profile)
-        self.assertIn("/LTCG", profile)
-        self.assertIn("CMake IPO", profile)
+        self.assertIn('set(_COMPILER_VERSION "194")', preparation)
+        self.assertIn("requires exact MSVC 19.51", preparation)
+        self.assertIn("tools.microsoft.msbuild:installation_path=", preparation)
+        self.assertIn("--mode unlocked --msvc-195-compat", source)
+
+        for name in ("build-android.yml", "build-ios.yml", "build-linux.yml", "build-macos.yml"):
+            other = (WORKFLOWS / name).read_text(encoding="utf-8")
+            self.assertNotIn("--msvc-195-compat", other, name)
 
     def test_windows_compatibility_contract_forbids_whole_program_optimization(self) -> None:
         build_input_patterns = (

@@ -95,18 +95,17 @@ before dependency resolution, so the generated Conan host profile is bound to
 TrustTunnel and delivered bridge target settings instead of depending on an
 image-specific implicit default.
 Conan 2.12.2 accepts the detected MSVC 195 setting but its internal CMake
-toolchain mapping ends at 194. The Windows workflow therefore fails unless the
-actual hosted compiler and tools are MSVC 19.51 / 14.51, then applies the
-tracked `windows-msvc-195-compat.profile` after automatic detection to use the
-binary-compatible 194 package identity. The v145 compiler, linker, and static
-runtime still perform the real build. Repository tests forbid `/GL`, `/LTCG`,
-and CMake interprocedural optimization because those modes require an exact
-toolset match and would invalidate this narrow compatibility exception. Remove
-the exception when the pinned Conan implementation fully supports MSVC 195.
-The workflow has already activated and absolute-path-bound the verified v145
-tools, so the compatibility profile disables Conan's redundant Visual Studio
-environment generation. This prevents Conan 2.12 from treating package
-identity 194 as a request to find or reactivate Visual Studio 17 / v143.
+toolchain mapping ends at 194. The Windows workflow therefore requires the
+actual hosted compiler and tools to be exactly MSVC 19.51 / 14.51, then patches
+the pinned Conan provider to use the binary-compatible 194 package identity in
+every recursively generated host profile. Those profiles retain the exact v145
+compiler paths and disable redundant Visual Studio activation, so Conan cannot
+mistake identity 194 for a request to find Visual Studio 17 / v143. The v145
+compiler, linker, and static runtime still perform the real build. Repository
+tests forbid `/GL`, `/LTCG`, and CMake interprocedural optimization because
+those modes require an exact toolset match and would invalidate this narrow
+compatibility exception. Remove the exception when the pinned Conan
+implementation fully supports MSVC 195.
 
 ## Updating tracked static libraries
 

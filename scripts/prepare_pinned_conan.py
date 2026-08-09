@@ -68,6 +68,10 @@ DNSLIBS_SOURCE_METHOD = '''    def source(self):
 PROVIDER_LOCK_GUARD_POINT = '''        get_property(_multiconfig_generator GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 '''
 PROVIDER_INSTALL_SUFFIX = "--build=missing ${generator})"
+PROVIDER_MSVC_VERSION_POINT = '''        string(SUBSTRING ${MSVC_VERSION} 0 3 _COMPILER_VERSION)
+'''
+PROVIDER_COMPILER_EXECUTABLES_POINT = '''    append_compiler_executables_configuration()
+'''
 PREPARATION_MODES = ("locked", "unlocked")
 LOCAL_LOCKED_RECIPE_REVISIONS = frozenset(
     {
@@ -214,8 +218,34 @@ def pin_nested_recipe_source(
     recipe_path.write_text(recipe.replace(expected_method, replacement), encoding="utf-8")
 
 
-def pin_native_libs_common_recipe(nlc: Path) -> None:
+def pin_native_libs_common_recipe(
+    nlc: Path, *, propagate_provider: bool = False,
+) -> None:
     pin_nested_recipe_source(nlc, NLC_SOURCE_METHOD, NLC_COMMIT, "NativeLibsCommon")
+    if not propagate_provider:
+        return
+
+    recipe_path = nlc / "conanfile.py"
+    recipe = recipe_path.read_text(encoding="utf-8")
+    recipe = replace_exact(
+        recipe,
+        "    exports_sources = patch_files\n",
+        '    exports_sources = patch_files + ["cmake/conan_provider.cmake"]\n',
+        "NativeLibsCommon provider export contract",
+    )
+    checkout_verified = (
+        f'        self.run("git merge-base --is-ancestor HEAD {NLC_COMMIT}")\n'
+    )
+    recipe = replace_exact(
+        recipe,
+        checkout_verified,
+        checkout_verified
+        + '        copy(self, "conan_provider.cmake",\n'
+        + '             src=join(self.export_sources_folder, "cmake"),\n'
+        + '             dst=join(self.source_folder, "cmake"))\n',
+        "NativeLibsCommon provider restore point",
+    )
+    recipe_path.write_text(recipe, encoding="utf-8")
 
 
 def pin_quiche_recipe(nlc: Path) -> None:
@@ -316,12 +346,49 @@ def enforce_conan_lockfile_provider(provider: Path) -> None:
     provider.write_text(source, encoding="utf-8")
 
 
-def configure_conan_provider(provider: Path, mode: str) -> None:
+def enforce_msvc_195_compat_provider(provider: Path) -> None:
+    """Make every recursive Windows profile use Conan 2.12's newest identity."""
+    source = provider.read_text(encoding="utf-8")
+    source = replace_exact(
+        source,
+        PROVIDER_MSVC_VERSION_POINT,
+        PROVIDER_MSVC_VERSION_POINT
+        + '''        if(NOT MSVC_VERSION EQUAL 1951)
+            message(FATAL_ERROR "Dobby MSVC compatibility requires exact MSVC 19.51")
+        endif()
+        # Conan 2.12's CMakeToolchain mapping ends at 194. The real compiler
+        # remains the exact CMake-bound MSVC 19.51 executable.
+        set(_COMPILER_VERSION "194")
+''',
+        "MSVC compatibility identity insertion point",
+    )
+    source = replace_exact(
+        source,
+        PROVIDER_COMPILER_EXECUTABLES_POINT,
+        PROVIDER_COMPILER_EXECUTABLES_POINT
+        + '''    if(MSVC AND MSVC_VERSION EQUAL 1951)
+        # The workflow already activated the exact v145 environment. Prevent
+        # Conan from interpreting compatibility identity 194 as Visual Studio 17.
+        string(APPEND PROFILE "tools.microsoft.msbuild:installation_path=\\n")
+    endif()
+''',
+        "MSVC compatibility activation insertion point",
+    )
+    provider.write_text(source, encoding="utf-8")
+
+
+def configure_conan_provider(
+    provider: Path, mode: str, *, msvc_195_compat: bool = False,
+) -> None:
     """Apply the only provider mutation allowed by the selected mode."""
+    if msvc_195_compat and mode != "unlocked":
+        raise PreparationError("MSVC 195 compatibility requires unlocked mode")
     if mode == "locked":
         enforce_conan_lockfile_provider(provider)
     elif mode != "unlocked":
         raise PreparationError("unknown Conan preparation mode")
+    if msvc_195_compat:
+        enforce_msvc_195_compat_provider(provider)
 
 
 def pin_dns_libs_recipe(dns: Path, nlc: Path) -> None:
@@ -389,7 +456,9 @@ def export_recipe(recipe: Path, version: str | None = None) -> str:
     return reference
 
 
-def prepare(trusttunnel: Path, mode: str) -> None:
+def prepare(trusttunnel: Path, mode: str, *, msvc_195_compat: bool = False) -> None:
+    if msvc_195_compat and os.name != "nt":
+        raise PreparationError("MSVC 195 compatibility is Windows-only")
     if not (trusttunnel / "conanfile.py").is_file() or not (trusttunnel / "cmake").is_dir():
         raise PreparationError("TrustTunnelClient checkout is invalid")
     validate_preparation_mode(mode)
@@ -400,9 +469,13 @@ def prepare(trusttunnel: Path, mode: str) -> None:
         nlc = root / "native-libs-common"
         checkout(DNSLIBS_URL, DNSLIBS_COMMIT, dns)
         checkout(NLC_URL, NLC_COMMIT, nlc)
-        configure_conan_provider(nlc / "cmake" / "conan_provider.cmake", mode)
+        configure_conan_provider(
+            nlc / "cmake" / "conan_provider.cmake",
+            mode,
+            msvc_195_compat=msvc_195_compat,
+        )
         pin_dns_libs_recipe(dns, nlc)
-        pin_native_libs_common_recipe(nlc)
+        pin_native_libs_common_recipe(nlc, propagate_provider=msvc_195_compat)
         pin_quiche_recipe(nlc)
         replace_generated_provider(nlc, trusttunnel)
         prepare_default_conan_profile()
@@ -419,9 +492,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trusttunnel", type=Path, required=True)
     parser.add_argument("--mode", choices=PREPARATION_MODES, required=True)
+    parser.add_argument(
+        "--msvc-195-compat",
+        action="store_true",
+        help="recursively map exact MSVC 19.51 to Conan 2.12 package identity 194",
+    )
     args = parser.parse_args()
     try:
-        prepare(args.trusttunnel.resolve(strict=True), args.mode)
+        prepare(
+            args.trusttunnel.resolve(strict=True),
+            args.mode,
+            msvc_195_compat=args.msvc_195_compat,
+        )
     except (OSError, PreparationError, subprocess.CalledProcessError) as error:
         print(
             "error: pinned Conan preparation failed: "

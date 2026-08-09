@@ -102,7 +102,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
 
     def test_profile_detection_follows_custom_settings_installation(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
-        prepare = source[source.index("def prepare(trusttunnel: Path, mode: str)") :]
+        prepare = source[source.index("def prepare(trusttunnel: Path, mode: str,") :]
         self.assertLess(
             prepare.index("replace_generated_provider(nlc, trusttunnel)"),
             prepare.index("prepare_default_conan_profile()"),
@@ -174,6 +174,61 @@ class PinnedConanPreparationTests(unittest.TestCase):
             MODULE.configure_conan_provider(provider, "unlocked")
 
             self.assertEqual(provider.read_text(encoding="utf-8"), original)
+
+    def test_windows_provider_recursively_maps_exact_msvc_195(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provider = Path(temporary) / "conan_provider.cmake"
+            provider.write_text(
+                "prefix\n"
+                + MODULE.PROVIDER_MSVC_VERSION_POINT
+                + "middle\n"
+                + MODULE.PROVIDER_COMPILER_EXECUTABLES_POINT
+                + "suffix\n",
+                encoding="utf-8",
+            )
+
+            MODULE.configure_conan_provider(
+                provider,
+                "unlocked",
+                msvc_195_compat=True,
+            )
+
+            generated = provider.read_text(encoding="utf-8")
+            self.assertEqual(generated.count("MSVC_VERSION EQUAL 1951"), 2)
+            self.assertIn('set(_COMPILER_VERSION "194")', generated)
+            self.assertIn("requires exact MSVC 19.51", generated)
+            self.assertIn(
+                'string(APPEND PROFILE "tools.microsoft.msbuild:installation_path=\\n")',
+                generated,
+            )
+
+    def test_windows_compatibility_rejects_locked_provider_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            provider = Path(temporary) / "conan_provider.cmake"
+            provider.write_text("unchanged\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(MODULE.PreparationError, "requires unlocked mode"):
+                MODULE.configure_conan_provider(
+                    provider,
+                    "locked",
+                    msvc_195_compat=True,
+                )
+
+            self.assertEqual(provider.read_text(encoding="utf-8"), "unchanged\n")
+
+    def test_windows_compatibility_is_rejected_before_non_windows_mutation(self) -> None:
+        with (
+            mock.patch.object(MODULE.os, "name", "posix"),
+            mock.patch.object(MODULE, "pin_trusttunnel_dns_requirement") as mutation,
+        ):
+            with self.assertRaisesRegex(MODULE.PreparationError, "Windows-only"):
+                MODULE.prepare(
+                    Path("does-not-need-to-exist"),
+                    "unlocked",
+                    msvc_195_compat=True,
+                )
+
+        mutation.assert_not_called()
 
     def test_pins_quiche_source_lock_and_cargo_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -262,6 +317,34 @@ class PinnedConanPreparationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(MODULE.PreparationError, "differs from the pinned input"):
                 MODULE.pin_native_libs_common_recipe(checkout)
+
+    def test_windows_native_libs_common_restores_the_recursive_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            recipe = checkout / "conanfile.py"
+            recipe.write_text(
+                "prefix\n    exports_sources = patch_files\n"
+                + MODULE.NLC_SOURCE_METHOD
+                + "suffix\n",
+                encoding="utf-8",
+            )
+
+            MODULE.pin_native_libs_common_recipe(checkout, propagate_provider=True)
+
+            generated = recipe.read_text(encoding="utf-8")
+            self.assertIn(
+                'exports_sources = patch_files + ["cmake/conan_provider.cmake"]',
+                generated,
+            )
+            self.assertIn('copy(self, "conan_provider.cmake"', generated)
+            self.assertLess(
+                generated.index(f"git merge-base --is-ancestor HEAD {MODULE.NLC_COMMIT}"),
+                generated.index('copy(self, "conan_provider.cmake"'),
+            )
+            self.assertLess(
+                generated.index('copy(self, "conan_provider.cmake"'),
+                generated.index("settings_file.write("),
+            )
 
     def test_pins_nested_dns_libs_source_and_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
