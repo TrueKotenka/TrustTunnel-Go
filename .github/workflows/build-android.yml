@@ -7,8 +7,9 @@ on:
   workflow_dispatch:
 
 env:
-  CONAN_VER: 2.12
+  CONAN_VERSION: 2.12.2
   LLVM_MAJOR_VER: 21
+  LLVM_INSTALLER_SHA256: 03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae
   BUILD_DIR: build
   ANDROID_NDK_VERSION: 28.1.13356709
   ANDROID_ABI: arm64-v8a
@@ -16,26 +17,29 @@ env:
 
 jobs:
   android-arm64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Configure isolated Conan home
+        run: echo "CONAN_HOME=$RUNNER_TEMP/dobby-conan-android-dynamic" >> "$GITHUB_ENV"
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: "17"
           distribution: "temurin"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android NDK
         run: |
@@ -47,59 +51,48 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-          pip install -r TrustTunnelClient/requirements.txt
-          pip install conan~=$CONAN_VER
+          pip install "pyyaml==6.0.3" "clangd-tidy==1.1.1" "tqdm==4.67.1"
+          pip install "conan==$CONAN_VERSION"
+          test "$(conan --version)" = "Conan version $CONAN_VERSION"
 
           # Install LLVM/Clang (needed for host tools during cross-compilation)
-          curl -O https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh $LLVM_MAJOR_VER
-          rm ./llvm.sh
+          llvm_installer="$RUNNER_TEMP/llvm-apt-installer.sh"
+          curl --proto '=https' --tlsv1.2 --location --fail --silent --show-error \
+            https://apt.llvm.org/llvm.sh --output "$llvm_installer"
+          printf '%s  %s\n' "$LLVM_INSTALLER_SHA256" "$llvm_installer" | sha256sum --check --strict
+          sudo bash "$llvm_installer" "$LLVM_MAJOR_VER"
+          rm "$llvm_installer"
           sudo apt-get install -y libc++-${LLVM_MAJOR_VER}-dev libclang-rt-${LLVM_MAJOR_VER}-dev
           echo "/usr/lib/llvm-$LLVM_MAJOR_VER/bin" >> $GITHUB_PATH
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.85.0"
           targets: aarch64-linux-android
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version 3.5.4
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk || true
-
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: android-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-cargo
 
       - name: Conan cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: conan-cache
         with:
-          path: ~/.conan2/
-          key: android-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-          restore-keys: android-conan2-
+          path: ${{ runner.temp }}/dobby-conan-android-dynamic
+          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
-      - name: Patch dns-libs version in conanfile.py
-        working-directory: TrustTunnelClient
-        run: |
-          # Update dns-libs version from 2.8.51 to 2.8.52 (upstream TrustTunnel hasn't updated yet)
-          sed -i 's/dns-libs\/2.8.51@/dns-libs\/2.8.52@/' conanfile.py
-          echo "Patched conanfile.py to use dns-libs 2.8.52"
-          grep "dns-libs" conanfile.py
-
-      - name: Bootstrap conan
-        if: steps.conan-cache.outputs.cache-hit != 'true'
-        working-directory: TrustTunnelClient
-        run: ./scripts/bootstrap_conan_deps.py
+      - name: Prepare pinned unlocked Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked
 
       - name: Prepare dobby_bridge build
         run: |
@@ -119,11 +112,11 @@ jobs:
             ..
 
       - name: Save conan cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.conan2/
-          key: android-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
+          path: ${{ runner.temp }}/dobby-conan-android-dynamic
+          key: android-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient
@@ -141,15 +134,15 @@ jobs:
             lib/android/${{ env.ANDROID_ABI }}/libdobby_bridge.so | grep -i "dobby" || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libdobby_bridge-android-${{ env.ANDROID_ABI }}
           path: lib/android/${{ env.ANDROID_ABI }}/libdobby_bridge.so
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version-file: "go.mod"
 
       - name: Build Go example (verify linking)
         working-directory: examples
@@ -165,26 +158,29 @@ jobs:
           go build -v -o examples_android
 
   android-arm64-static:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Configure isolated Conan home
+        run: echo "CONAN_HOME=$RUNNER_TEMP/dobby-conan-android-static" >> "$GITHUB_ENV"
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: "17"
           distribution: "temurin"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android NDK
         run: |
@@ -196,53 +192,48 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-          pip install -r TrustTunnelClient/requirements.txt
-          pip install conan~=$CONAN_VER
+          pip install "pyyaml==6.0.3" "clangd-tidy==1.1.1" "tqdm==4.67.1"
+          pip install "conan==$CONAN_VERSION"
+          test "$(conan --version)" = "Conan version $CONAN_VERSION"
 
           # Install LLVM/Clang (needed for host tools during cross-compilation)
-          curl -O https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh $LLVM_MAJOR_VER
-          rm ./llvm.sh
+          llvm_installer="$RUNNER_TEMP/llvm-apt-installer.sh"
+          curl --proto '=https' --tlsv1.2 --location --fail --silent --show-error \
+            https://apt.llvm.org/llvm.sh --output "$llvm_installer"
+          printf '%s  %s\n' "$LLVM_INSTALLER_SHA256" "$llvm_installer" | sha256sum --check --strict
+          sudo bash "$llvm_installer" "$LLVM_MAJOR_VER"
+          rm "$llvm_installer"
           sudo apt-get install -y libc++-${LLVM_MAJOR_VER}-dev libclang-rt-${LLVM_MAJOR_VER}-dev
           echo "/usr/lib/llvm-$LLVM_MAJOR_VER/bin" >> $GITHUB_PATH
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.85.0"
           targets: aarch64-linux-android
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version 3.5.4
 
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: android-static-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-cargo
 
       - name: Conan cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: conan-cache
         with:
-          path: ~/.conan2/
-          key: android-static-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-          restore-keys: android-static-conan2-
+          path: ${{ runner.temp }}/dobby-conan-android-static
+          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
-      - name: Patch dns-libs version in conanfile.py
-        working-directory: TrustTunnelClient
-        run: |
-          sed -i 's/dns-libs\/2.8.51@/dns-libs\/2.8.52@/' conanfile.py
-
-      - name: Bootstrap conan
-        if: steps.conan-cache.outputs.cache-hit != 'true'
-        working-directory: TrustTunnelClient
-        run: ./scripts/bootstrap_conan_deps.py
+      - name: Prepare pinned unlocked Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked
 
       - name: Prepare dobby_bridge build
         run: |
@@ -263,11 +254,11 @@ jobs:
             ..
 
       - name: Save conan cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.conan2/
-          key: android-static-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
+          path: ${{ runner.temp }}/dobby-conan-android-static
+          key: android-static-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-android.yml') }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient
@@ -282,7 +273,7 @@ jobs:
             -not -name "*.dll.a" \
             | sort)
             
-          CONAN_LIBS=$(find ~/.conan2/p -type f -name "*.a" | grep "/p/lib/" | sort)
+          CONAN_LIBS=$(find "$CONAN_HOME/p" -type f -name "*.a" | grep "/p/lib/" | sort)
           
           echo "create lib/android/${{ env.ANDROID_ABI }}/libdobby_bridge.a" > merge.mri
           for lib in $STATIC_LIBS $CONAN_LIBS; do
@@ -299,15 +290,15 @@ jobs:
           file lib/android/${{ env.ANDROID_ABI }}/libdobby_bridge.a
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libdobby_bridge-android-${{ env.ANDROID_ABI }}-static
           path: lib/android/${{ env.ANDROID_ABI }}/libdobby_bridge.a
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version-file: "go.mod"
 
       - name: Build Go example (verify linking)
         working-directory: examples

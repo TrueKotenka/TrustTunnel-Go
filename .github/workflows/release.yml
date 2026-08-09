@@ -1,0 +1,362 @@
+name: Release go-go-tunnel
+run-name: Release ${{ inputs.tag }} from ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Semantic module tag, for example v1.0.1
+        required: true
+        type: string
+      source_sha:
+        description: Exact full main-branch source SHA built by every selected platform run
+        required: true
+        type: string
+      android_run_id:
+        description: Successful Build Android run at source_sha
+        required: true
+        type: string
+      ios_run_id:
+        description: Successful Build iOS run at source_sha
+        required: true
+        type: string
+      linux_run_id:
+        description: Successful Build Linux run at source_sha
+        required: true
+        type: string
+      macos_run_id:
+        description: Successful Build macOS run at source_sha
+        required: true
+        type: string
+      windows_run_id:
+        description: Successful Build Windows run at source_sha
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-go-go-tunnel-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      ANDROID_RUN_ID: ${{ inputs.android_run_id }}
+      IOS_RUN_ID: ${{ inputs.ios_run_id }}
+      LINUX_RUN_ID: ${{ inputs.linux_run_id }}
+      MACOS_RUN_ID: ${{ inputs.macos_run_id }}
+      WINDOWS_RUN_ID: ${{ inputs.windows_run_id }}
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify release preconditions and selected platform runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          current_main="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          test "$current_main" = "$SOURCE_SHA"
+
+          verify_run() {
+            local run_id="$1"
+            local workflow_name="$2"
+            local expected_sha="$3"
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+            local run
+            run="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json conclusion,headSha,status,workflowName)"
+            test "$(jq -r .status <<<"$run")" = "completed"
+            test "$(jq -r .conclusion <<<"$run")" = "success"
+            test "$(jq -r .headSha <<<"$run")" = "$expected_sha"
+            test "$(jq -r .workflowName <<<"$run")" = "$workflow_name"
+          }
+          verify_run "$ANDROID_RUN_ID" "Build Android" "$SOURCE_SHA"
+          verify_run "$IOS_RUN_ID" "Build iOS" "$SOURCE_SHA"
+          verify_run "$LINUX_RUN_ID" "Build Linux" "$SOURCE_SHA"
+          verify_run "$MACOS_RUN_ID" "Build macOS" "$SOURCE_SHA"
+          verify_run "$WINDOWS_RUN_ID" "Build Windows" "$SOURCE_SHA"
+
+          provenance=lib/static-libraries.provenance.json
+          jq -e '
+            keys == ["artifacts", "schema", "source_sha"] and
+            .schema == 1 and
+            (.source_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+            (.artifacts | keys == ["android", "ios", "macos"]) and
+            all(.artifacts[];
+              (keys == ["run_id", "sha256"]) and
+              (.run_id | type == "string" and test("^[1-9][0-9]*$")) and
+              (.sha256 | type == "string" and test("^[0-9a-f]{64}$")))
+          ' "$provenance"
+          static_source_sha="$(jq -r .source_sha "$provenance")"
+          test "$(git rev-parse "$SOURCE_SHA^")" = "$static_source_sha"
+          while IFS= read -r changed_path; do
+            case "$changed_path" in
+              lib/android/arm64-v8a/libdobby_bridge.a|lib/ios/libdobby_bridge.a|lib/macos/libdobby_bridge.a|lib/static-libraries.provenance.json) ;;
+              *) echo "unexpected change in static-library update commit: $changed_path" >&2; exit 1 ;;
+            esac
+          done < <(git diff --name-only "$static_source_sha" "$SOURCE_SHA")
+
+          verify_recorded_static() {
+            local platform="$1"
+            local workflow_name="$2"
+            local archive="$3"
+            local run_id
+            local recorded_sha
+            run_id="$(jq -r --arg platform "$platform" '.artifacts[$platform].run_id' "$provenance")"
+            recorded_sha="$(jq -r --arg platform "$platform" '.artifacts[$platform].sha256' "$provenance")"
+            test "$(sha256sum "$archive" | awk '{print $1}')" = "$recorded_sha"
+            verify_run "$run_id" "$workflow_name" "$static_source_sha"
+          }
+          verify_recorded_static android "Build Android" lib/android/arm64-v8a/libdobby_bridge.a
+          verify_recorded_static ios "Build iOS" lib/ios/libdobby_bridge.a
+          verify_recorded_static macos "Build macOS" lib/macos/libdobby_bridge.a
+
+          existing_tag_refs="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" | \
+            jq -r --arg ref "refs/tags/$RELEASE_TAG" '.[] | select(.ref == $ref) | .ref')"
+          if [[ -n "$existing_tag_refs" ]]; then
+            echo "refusing to replace an existing tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          existing_release_ids="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+            jq -r --arg tag "$RELEASE_TAG" '.[] | select(.tag_name == $tag) | .id')"
+          if [[ -n "$existing_release_ids" ]]; then
+            echo "refusing to replace an existing release: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Download exact Windows artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: dobby_bridge-windows-x86_64
+          path: release-input/windows
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.windows_run_id }}
+
+      - name: Download exact Linux artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: libdobby_bridge-linux-x86_64
+          path: release-input/linux
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.linux_run_id }}
+
+      - name: Download exact Android dynamic artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: libdobby_bridge-android-arm64-v8a
+          path: release-input/android-dynamic
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.android_run_id }}
+
+      - name: Download exact Android static artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: libdobby_bridge-android-arm64-v8a-static
+          path: release-input/android-static
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.android_run_id }}
+
+      - name: Download exact iOS artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: libdobby_bridge-ios-arm64
+          path: release-input/ios
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ios_run_id }}
+
+      - name: Download exact macOS dynamic artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: libdobby_bridge-macos-arm64
+          path: release-input/macos-dynamic
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.macos_run_id }}
+
+      - name: Download exact macOS static artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: libdobby_bridge-macos-arm64-static
+          path: release-input/macos-static
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.macos_run_id }}
+
+      - name: Package deterministic release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp release-input/android-static/libdobby_bridge.a lib/android/arm64-v8a/libdobby_bridge.a
+          cmp release-input/ios/libdobby_bridge.a lib/ios/libdobby_bridge.a
+          cmp release-input/macos-static/libdobby_bridge.a lib/macos/libdobby_bridge.a
+          python3 scripts/package_release_assets.py package \
+            --source-sha "$SOURCE_SHA" \
+            --run "android=$ANDROID_RUN_ID" \
+            --run "ios=$IOS_RUN_ID" \
+            --run "linux=$LINUX_RUN_ID" \
+            --run "macos=$MACOS_RUN_ID" \
+            --run "windows=$WINDOWS_RUN_ID" \
+            --input-dir release-input \
+            --output-dir release
+          python3 scripts/package_release_assets.py verify \
+            --source-sha "$SOURCE_SHA" \
+            --asset-dir release \
+            --manifest release/release-assets.manifest.json
+
+      - name: Publish verified draft as public release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_object=""
+          published=false
+
+          exact_release() {
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+              jq -sc --arg tag "$RELEASE_TAG" '
+                [.[][] | select(.tag_name == $tag)] |
+                if length == 0 then empty
+                elif length == 1 then .[0]
+                else error("duplicate releases for tag")
+                end'
+          }
+
+          exact_remote_tag_object() {
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" | \
+              jq -sr --arg ref "refs/tags/$RELEASE_TAG" '
+                [.[][] | select(.ref == $ref) | .object.sha] |
+                if length == 0 then empty
+                elif length == 1 then .[0]
+                else error("duplicate exact tag refs")
+                end'
+          }
+
+          verify_owned_remote_tag() {
+            local remote_tag_object
+            local remote_target
+            remote_tag_object="$(exact_remote_tag_object)"
+            test "$remote_tag_object" = "$tag_object"
+            remote_target="$(gh api \
+              "repos/$GITHUB_REPOSITORY/git/tags/$remote_tag_object" --jq .object.sha)"
+            test "$remote_target" = "$SOURCE_SHA"
+          }
+
+          rollback() {
+            status=$?
+            if (( status == 0 )) || [[ "$published" == true ]]; then
+              exit "$status"
+            fi
+            set +e
+
+            release_record="$(exact_release)"
+            release_query_status=$?
+            safe_to_delete_tag=false
+            if (( release_query_status != 0 )); then
+              echo "warning: could not determine rollback release ownership" >&2
+            elif [[ -z "$release_record" ]]; then
+              safe_to_delete_tag=true
+            elif [[ "$(jq -r .draft <<<"$release_record")" == true ]]; then
+              release_id="$(jq -r .id <<<"$release_record")"
+              if [[ "$release_id" =~ ^[1-9][0-9]*$ ]] && \
+                 gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"; then
+                safe_to_delete_tag=true
+              else
+                echo "warning: failed to roll back owned draft release $RELEASE_TAG" >&2
+              fi
+            else
+              echo "warning: refusing to roll back public release $RELEASE_TAG" >&2
+            fi
+
+            if [[ "$safe_to_delete_tag" == true && -n "$tag_object" ]]; then
+              remote_tag_object="$(exact_remote_tag_object)"
+              tag_query_status=$?
+              if (( tag_query_status != 0 )); then
+                echo "warning: could not determine rollback tag ownership" >&2
+              elif [[ -z "$remote_tag_object" ]]; then
+                :
+              elif [[ "$remote_tag_object" == "$tag_object" ]]; then
+                gh api --method DELETE \
+                  "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" || \
+                  echo "warning: failed to roll back owned tag $RELEASE_TAG" >&2
+              else
+                echo "warning: refusing to delete a tag object not owned by this run" >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap rollback EXIT
+
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" = "$SOURCE_SHA"
+          existing_tag_refs="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" | \
+            jq -r --arg ref "refs/tags/$RELEASE_TAG" '.[] | select(.ref == $ref) | .ref')"
+          existing_release_ids="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+            jq -r --arg tag "$RELEASE_TAG" '.[] | select(.tag_name == $tag) | .id')"
+          if [[ -n "$existing_tag_refs" || -n "$existing_release_ids" ]]; then
+            echo "tag or release appeared while packaging; refusing publication" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$RELEASE_TAG" "$SOURCE_SHA" --message "go-go-tunnel $RELEASE_TAG"
+          test "$(git rev-parse "$RELEASE_TAG^{}")" = "$SOURCE_SHA"
+          tag_object="$(git rev-parse "$RELEASE_TAG^{tag}")"
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]]
+          git push origin "refs/tags/$RELEASE_TAG"
+          verify_owned_remote_tag
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --notes "go-go-tunnel $RELEASE_TAG built from $SOURCE_SHA" \
+            release/dobby_bridge-windows-x86_64.zip \
+            release/libdobby_bridge-linux-x86_64.zip \
+            release/libdobby_bridge-android-arm64-v8a.zip \
+            release/libdobby_bridge-android-arm64-v8a-static.zip \
+            release/libdobby_bridge-ios-arm64.zip \
+            release/libdobby_bridge-macos-arm64.zip \
+            release/libdobby_bridge-macos-arm64-static.zip \
+            release/release-assets.manifest.json
+          release_record="$(exact_release)"
+          test -n "$release_record"
+          test "$(jq -r .draft <<<"$release_record")" = true
+          test "$(jq -r .tag_name <<<"$release_record")" = "$RELEASE_TAG"
+          verify_owned_remote_tag
+          mkdir published
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir published --pattern '*'
+          cmp release/release-assets.manifest.json published/release-assets.manifest.json
+          python3 scripts/package_release_assets.py verify \
+            --source-sha "$SOURCE_SHA" \
+            --asset-dir published \
+            --manifest published/release-assets.manifest.json
+          verify_owned_remote_tag
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          published=true
+          release_record="$(exact_release)"
+          test -n "$release_record"
+          test "$(jq -r .draft <<<"$release_record")" = false
+          test "$(jq -r .tag_name <<<"$release_record")" = "$RELEASE_TAG"
+          verify_owned_remote_tag
+          trap - EXIT

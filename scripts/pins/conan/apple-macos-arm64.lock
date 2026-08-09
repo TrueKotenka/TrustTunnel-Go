@@ -1,0 +1,41 @@
+{
+    "version": "0.5",
+    "requires": [
+        "zlib/1.3.1#cac0f6daea041b0ccf42934163defb20%1765284699.337",
+        "tomlplusplus/3.3.0#3109e968b4a517f395e638753c6faa43%1718732131.039",
+        "tldregistry/2022-12-26@adguard/oss#45b0964264aaf68f25514d9fa3f9558a%1786280795.382517",
+        "quiche/0.17.1@adguard/oss#cf19daf07f3da6b857b19fbfe718cb70%1786280795.076805",
+        "pcre2/10.37@adguard/oss#73864ed3c4d8e34486bc484dc3e133e4%1786280794.747235",
+        "openssl/boring-2024-09-13@adguard/oss#325eeda72477e4c1d1a18d607c8704c0%1786280790.218667",
+        "nlohmann_json/3.12.0#2d634ab0ec8d9f56353e5ccef6d6612c%1744735883.94",
+        "ngtcp2/1.0.1@adguard/oss#8df07ca7aeeba2cb52adad658ae8b357%1786280794.132488",
+        "nghttp3/1.0.0@adguard/oss#eebebee4f2e7e2f96ff6604c29ec9232%1786280793.51948",
+        "nghttp2/1.56.0@adguard/oss#227b6065ed31c973828dff969ed60eac%1786280793.220599",
+        "native_libs_common/8.1.28@adguard/oss#50dd4c91ba309f50b0741ad46860cead%1786280789.8962822",
+        "magic_enum/0.9.5#768c09bb424bda31d224304693b50fb3%1727191751.162",
+        "llhttp/9.1.3@adguard/oss#73e3f4ea6b8b4ac39b0fa6e5b366a6f3%1786280792.618011",
+        "libuv/1.41.0@adguard/oss#1c1c2b1dfe58480a54ddf7a71a3ac806%1786280792.322144",
+        "libsodium/1.0.18@adguard/oss#812e2406acd49c4ba9a89a454b57315b%1786280792.018039",
+        "libevent/2.1.11@adguard/oss#edf6cb76089bedfecfc9b89015b12b20%1786280791.721886",
+        "ldns/2021-03-29@adguard/oss#fd1352e56cca9b0313c7f006f663e053%1786280791.4165828",
+        "klib/2021-04-06@adguard/oss#d79c40384bfe661c91c75ad1615bff0d%1786280791.115781",
+        "http_parser/2.9.4#98d91690d6fd021e9e624218a85d9d97%1743410856.678",
+        "gtest/1.14.0#f8f0757a574a8dd747d16af62d6eb1b7%1743410807.169",
+        "fmt/12.1.0#6baf0fb8351783472b94ee6e36232391%1785754553.994",
+        "dns-libs/2.8.52@adguard/oss#6a755f497664ecf084c2e829581960d2%1786280795.8798609",
+        "cxxopts/3.1.1#b358aff6883980b4f0915734a5c8214a%1701173290.847",
+        "brotli/1.1.0#3f631ef77008f7b5eb388780116371a3%1764862343.045",
+        "ada/2.7.4#e86909dd9cb9714ca39dbc12f7f41053%1700559832.331"
+    ],
+    "build_requires": [
+        "cmake/3.31.12#173a926abc2b77f03c826b6fd6539426%1779785723.158"
+    ],
+    "python_requires": [],
+    "overrides": {
+        "openssl/boring-2024-09-13@adguard/oss#325eeda72477e4c1d1a18d607c8704c0": [
+            null,
+            "openssl/boring-2024-09-13@adguard/oss#325eeda72477e4c1d1a18d607c8704c0"
+        ]
+    },
+    "config_requires": []
+}

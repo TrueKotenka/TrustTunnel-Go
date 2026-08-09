@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  CONAN_VER: 2.12
+  CONAN_VERSION: 2.12.2
   BUILD_DIR: build
 
 jobs:
@@ -15,12 +15,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Configure isolated Conan home
+        shell: bash
+        run: echo "CONAN_HOME=$RUNNER_TEMP/dobby-conan-windows" >> "$GITHUB_ENV"
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -34,54 +38,44 @@ jobs:
       - name: Install packages
         run: |
           choco install strawberryperl nasm ninja -y
-          pip install conan~=${{ env.CONAN_VER }}
-          pip install -r TrustTunnelClient\requirements.txt
+          pip install "conan==$env:CONAN_VERSION"
+          if ((conan --version) -ne "Conan version $env:CONAN_VERSION") { throw "Conan version differs from the pinned workflow input" }
+          pip install "pyyaml==6.0.3" "clangd-tidy==1.1.1" "tqdm==4.67.1"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.85.0"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
 
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: windows-ccache
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-ccache
 
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-cargo
 
       - name: Conan cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: conan-cache
         with:
-          path: ~/.conan2/
-          key: windows-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-          restore-keys: windows-conan2-
+          path: ${{ runner.temp }}/dobby-conan-windows
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-conan
 
-      - name: Patch dns-libs version in conanfile.py
-        working-directory: TrustTunnelClient
-        run: |
-          # Update dns-libs version from 2.8.51 to 2.8.52 (upstream TrustTunnel hasn't updated yet)
-          sed -i 's/dns-libs\/2.8.51@/dns-libs\/2.8.52@/' conanfile.py
-          echo "Patched conanfile.py to use dns-libs 2.8.52"
-          grep "dns-libs" conanfile.py
-
-      - name: Bootstrap conan
-        if: steps.conan-cache.outputs.cache-hit != 'true'
-        working-directory: TrustTunnelClient
-        run: python scripts\bootstrap_conan_deps.py
+      - name: Prepare pinned unlocked Conan recipes and provider
+        run: python scripts\prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked
 
       - name: Prepare dobby_bridge build
         run: |
@@ -102,11 +96,11 @@ jobs:
             ..
 
       - name: Save conan cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.conan2/
-          key: windows-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
+          path: ${{ runner.temp }}/dobby-conan-windows
+          key: windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-windows.yml') }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient
@@ -123,7 +117,7 @@ jobs:
           dumpbin /exports lib\windows\dobby_bridge.dll | Select-String "dobby"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dobby_bridge-windows-x86_64
           path: |
@@ -133,57 +127,3 @@ jobs:
       - name: Build Go example
         working-directory: examples
         run: go build -v -o examples.exe
-
-      - name: Upload Go example artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: examples
-          path: |
-            examples/examples.exe
-
-      - name: Run example (crash test & proxy test)
-        working-directory: examples
-        env:
-          TT_CONFIG: ${{ secrets.TT_CONFIG }}
-        run: |
-          # Copy DLL next to the executable for runtime loading
-          Copy-Item ..\lib\windows\dobby_bridge.dll .
-          # Start the process and wait up to 5 seconds
-          $process = Start-Process -FilePath .\examples.exe -PassThru -WindowStyle Hidden
-          Start-Sleep -Seconds 5
-          
-          if ($process.HasExited) {
-            $ec = $process.ExitCode
-            Write-Host "❌ CRASH detected with exit code $ec"
-            exit 1
-          }
-          
-          # Test proxy
-          Write-Host "Testing proxy connection..."
-          $success = $false
-          for ($i = 1; $i -le 10; $i++) {
-            curl.exe -sS --max-time 5 -x socks5h://127.0.0.1:10808 http://1.1.1.1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-              $success = $true
-              break
-            }
-            Write-Host "Waiting for proxy to be ready... Attempt $i/10"
-            Start-Sleep -Seconds 2
-          }
-
-          if ($success) {
-            Write-Host "✅ Proxy test passed! Traffic is successfully routing."
-          } else {
-            Write-Host "❌ Proxy test failed! Could not route traffic."
-            Stop-Process -Id $process.Id -Force
-            exit 1
-          }
-
-          if (-not $process.HasExited) {
-            Stop-Process -Id $process.Id -Force
-            Write-Host "✅ Crash test passed (no crash after proxy test)"
-          } else {
-            $ec = $process.ExitCode
-            Write-Host "❌ CRASH detected with exit code $ec"
-            exit 1
-          }

@@ -3,11 +3,11 @@
 A Go wrapper for the TrustTunnel VPN library, providing cross-platform support for Windows, Linux, macOS, iOS, and Android.
 
 Build workflows:
-[Windows](https://github.com/TrueKotenka/TrustTunnel-Go/actions/workflows/build-windows.yml) |
-[Linux](https://github.com/TrueKotenka/TrustTunnel-Go/actions/workflows/build-desktop.yml/badge.svg) |
-[MacOs](https://github.com/TrueKotenka/TrustTunnel-Go/actions/workflows/build-macos.yml) |
-[Android](https://github.com/TrueKotenka/TrustTunnel-Go/actions/workflows/build-android.yml) |
-[iOs](https://github.com/TrueKotenka/TrustTunnel-Go/actions/workflows/build-ios.yml)
+[Windows](https://github.com/DobbyVPN/go-go-tunnel/actions/workflows/build-windows.yml) |
+[Linux](https://github.com/DobbyVPN/go-go-tunnel/actions/workflows/build-linux.yml) |
+[macOS](https://github.com/DobbyVPN/go-go-tunnel/actions/workflows/build-macos.yml) |
+[Android](https://github.com/DobbyVPN/go-go-tunnel/actions/workflows/build-android.yml) |
+[iOS](https://github.com/DobbyVPN/go-go-tunnel/actions/workflows/build-ios.yml)
 
 ## Overview
 
@@ -36,29 +36,26 @@ Build support is split into **Dynamic** and **Static** libraries:
 
 Static libraries are already committed in the repository, so they will work "out of the box". Dynamic libraries need to be downloaded separately if needed.
 
+Public workflows are compile, export, and consumer-link checks and do not require connection credentials. Real-network qualification belongs to the consuming application's own environment.
+
 ## Quick Start
 
 ### Installation
 
-1. **Find the latest version:**
-   Run the following command to get the latest version:
-   ```bash
-   go get github.com/TrueKotenka/TrustTunnel-Go
-   ```
-
-2. **Update your `go.mod`:**
-   Add a replace directive in your `go.mod` using the version obtained:
+1. **Update your `go.mod`:**
+   Require the stable local module name and map it to this repository release:
    ```go
-   replace trusttunnel-go => github.com/TrueKotenka/TrustTunnel-Go v1.0.x
-   ```
-   *(Replace `v1.0.x` with the actual latest version)*
+   require trusttunnel-go v0.0.0
 
-3. **Get the package:**
+   replace trusttunnel-go => github.com/DobbyVPN/go-go-tunnel v1.0.1
+   ```
+
+2. **Download the package:**
    ```bash
-   go get trusttunnel-go
+   go mod download trusttunnel-go
    ```
 
-4. **Download dynamic library (if needed):**
+3. **Download dynamic library (if needed):**
    If your platform requires a dynamic library (e.g., Windows, Linux), download the pre-built library from GitHub Releases and place it in the appropriate directory for your application to link against. Static libs are included and work out of the box.
 
 ### Basic Example
@@ -70,7 +67,7 @@ import (
     "log"
     "time"
     
-    tt "github.com/TrueKotenka/TrustTunnel-Go/manager"
+    tt "trusttunnel-go/manager"
 )
 
 func main() {

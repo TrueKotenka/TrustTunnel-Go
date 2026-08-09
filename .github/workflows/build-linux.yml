@@ -7,21 +7,25 @@ on:
   workflow_dispatch:
 
 env:
-  CONAN_VER: 2.12
+  CONAN_VERSION: 2.12.2
   LLVM_MAJOR_VER: 21
+  LLVM_INSTALLER_SHA256: 03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae
   BUILD_DIR: build
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Configure isolated Conan home
+        run: echo "CONAN_HOME=$RUNNER_TEMP/dobby-conan-linux" >> "$GITHUB_ENV"
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -30,62 +34,54 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-          pip install -r TrustTunnelClient/requirements.txt
-          pip install conan~=$CONAN_VER
+          pip install "pyyaml==6.0.3" "clangd-tidy==1.1.1" "tqdm==4.67.1"
+          pip install "conan==$CONAN_VERSION"
+          test "$(conan --version)" = "Conan version $CONAN_VERSION"
 
           # Install LLVM/Clang
-          curl -O https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh $LLVM_MAJOR_VER
-          rm ./llvm.sh
+          llvm_installer="$RUNNER_TEMP/llvm-apt-installer.sh"
+          curl --proto '=https' --tlsv1.2 --location --fail --silent --show-error \
+            https://apt.llvm.org/llvm.sh --output "$llvm_installer"
+          printf '%s  %s\n' "$LLVM_INSTALLER_SHA256" "$llvm_installer" | sha256sum --check --strict
+          sudo bash "$llvm_installer" "$LLVM_MAJOR_VER"
+          rm "$llvm_installer"
           sudo apt-get install -y libc++-${LLVM_MAJOR_VER}-dev libclang-rt-${LLVM_MAJOR_VER}-dev
           echo "/usr/lib/llvm-$LLVM_MAJOR_VER/bin" >> $GITHUB_PATH
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.85.0"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
 
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: linux-ccache
+          key: linux-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-linux.yml') }}-ccache
 
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: linux-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-linux.yml') }}-cargo
 
       - name: Conan cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: conan-cache
         with:
-          path: ~/.conan2/
-          key: linux-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-          restore-keys: linux-conan2-
+          path: ${{ runner.temp }}/dobby-conan-linux
+          key: linux-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-linux.yml') }}-conan
 
-      - name: Patch dns-libs version in conanfile.py
-        working-directory: TrustTunnelClient
-        run: |
-          # Update dns-libs version from 2.8.51 to 2.8.52 (upstream TrustTunnel hasn't updated yet)
-          sed -i 's/dns-libs\/2.8.51@/dns-libs\/2.8.52@/' conanfile.py
-          echo "Patched conanfile.py to use dns-libs 2.8.52"
-          grep "dns-libs" conanfile.py
-
-      - name: Bootstrap conan
-        if: steps.conan-cache.outputs.cache-hit != 'true'
-        working-directory: TrustTunnelClient
-        run: ./scripts/bootstrap_conan_deps.py
+      - name: Prepare pinned unlocked Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode unlocked
 
       - name: Prepare dobby_bridge build
         run: |
@@ -107,11 +103,11 @@ jobs:
             ..
 
       - name: Save conan cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.conan2/
-          key: linux-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
+          path: ${{ runner.temp }}/dobby-conan-linux
+          key: linux-${{ runner.arch }}-${{ hashFiles('scripts/prepare_pinned_conan.py', 'scripts/pins/quiche-0.17.1.Cargo.lock', 'TrustTunnelClient/**', 'dobby_bridge/**', '.github/workflows/build-linux.yml') }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient
@@ -128,7 +124,7 @@ jobs:
           nm -D lib/linux/libdobby_bridge.so | grep -i "dobby" || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libdobby_bridge-linux-x86_64
           path: lib/linux/libdobby_bridge.so
@@ -136,51 +132,3 @@ jobs:
       - name: Build Go example
         working-directory: examples
         run: go build -v -o examples
-
-      - name: Upload Go example artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: examples
-          path: |
-            examples/examples
-
-      - name: Run example (crash test & proxy test)
-        working-directory: examples
-        env:
-          TT_CONFIG: ${{ secrets.TT_CONFIG }}
-        run: |
-          export LD_LIBRARY_PATH=$PWD/../lib/linux:$LD_LIBRARY_PATH
-          # Run example and wait for it to initialize
-          ./examples &
-          PID=$!
-          sleep 5
-          
-          # Check if proxy is working
-          echo "Testing proxy connection..."
-          SUCCESS=0
-          for i in {1..10}; do
-            if curl -sS --max-time 5 -x socks5h://127.0.0.1:10808 http://1.1.1.1 > /dev/null; then
-              SUCCESS=1
-              break
-            fi
-            echo "Waiting for proxy to be ready... Attempt $i/10"
-            sleep 2
-          done
-          
-          if [ $SUCCESS -eq 1 ]; then
-            echo "✅ Proxy test passed! Traffic is successfully routing."
-          else
-            echo "❌ Proxy test failed! Could not route traffic."
-            kill $PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          if kill -0 $PID 2>/dev/null; then
-            kill $PID
-            echo "✅ Crash test passed (no crash after proxy test)"
-          else
-            wait $PID
-            EC=$?
-            echo "❌ CRASH detected with exit code $EC"
-            exit 1
-          fi

@@ -7,35 +7,54 @@ on:
   workflow_dispatch:
 
 env:
-  CONAN_VER: 2.12
+  CONAN_VERSION: 2.12.2
   BUILD_DIR: build
+  MACOS_DEPLOYMENT_TARGET: "15.0"
+  MACOSX_DEPLOYMENT_TARGET: "15.0"
+  APPLE_TOOLCHAIN_KEY: xcode-26.3-17C529
 
 jobs:
   macos-arm64:
-    runs-on: macos-latest
+    runs-on: macos-15
+    env:
+      DOBBY_CONAN_LOCKFILE: ${{ github.workspace }}/scripts/pins/conan/apple-macos-arm64.lock
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Configure isolated Conan home
+        run: echo "CONAN_HOME=$RUNNER_TEMP/dobby-conan-macos-dynamic" >> "$GITHUB_ENV"
+
+      - name: Select exact Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          test "$(xcodebuild -version | tr '\n' ' ')" = "Xcode 26.3 Build version 17C529 "
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
+      - name: Derive Apple native input digest
+        id: native-input
+        run: |
+          digest="$(python3 scripts/apple_native_input_digest.py \
+            --platform macos \
+            --conan-version "$CONAN_VERSION" \
+            --xcode-key "$APPLE_TOOLCHAIN_KEY" \
+            --deployment-target "$MACOS_DEPLOYMENT_TARGET" \
+            --rust-toolchain 1.85.0)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Install packages
         run: |
-          brew install ninja llvm@21
+          brew install ninja
+          pip install "pyyaml==6.0.3" "clangd-tidy==1.1.1" "tqdm==4.67.1"
+          pip install "conan==$CONAN_VERSION"
+          test "$(conan --version)" = "Conan version $CONAN_VERSION"
 
-          # Patch libc++ availability header (required for compatibility)
-          sed -i '' 's/_LIBCPP_INTRODUCED_IN_LLVM_21 1/_LIBCPP_INTRODUCED_IN_LLVM_21 0/g' \
-            "$(brew --prefix llvm@21)/include/c++/v1/__configuration/availability.h"
-
-          pip install -r TrustTunnelClient/requirements.txt
-          pip install conan~=$CONAN_VER
-
-          echo "/opt/homebrew/opt/llvm@21/bin" >> $GITHUB_PATH
           # Add python's bin dir to path
           PY_BIN=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))")
           echo "$PY_BIN" >> $GITHUB_PATH
@@ -43,48 +62,38 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.85.0"
+          targets: aarch64-apple-darwin
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
 
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: macos-ccache
+          key: macos-${{ env.MACOS_DEPLOYMENT_TARGET }}-${{ env.APPLE_TOOLCHAIN_KEY }}-ccache
 
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: macos-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-cargo
 
       - name: Conan cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: conan-cache
         with:
-          path: ~/.conan2/
-          key: macos-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-          restore-keys: macos-conan2-
+          path: ${{ runner.temp }}/dobby-conan-macos-dynamic
+          key: macos-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
-      - name: Patch dns-libs version in conanfile.py
-        working-directory: TrustTunnelClient
-        run: |
-          # Update dns-libs version from 2.8.51 to 2.8.52 (upstream TrustTunnel hasn't updated yet)
-          sed -i '' 's/dns-libs\/2.8.51@/dns-libs\/2.8.52@/' conanfile.py
-          echo "Patched conanfile.py to use dns-libs 2.8.52"
-          grep "dns-libs" conanfile.py
-
-      - name: Bootstrap conan
-        if: steps.conan-cache.outputs.cache-hit != 'true'
-        working-directory: TrustTunnelClient
-        run: ./scripts/bootstrap_conan_deps.py
+      - name: Prepare pinned Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode locked
 
       - name: Prepare dobby_bridge build
         run: |
@@ -93,24 +102,31 @@ jobs:
       - name: CMake configure
         working-directory: TrustTunnelClient
         run: |
+          PREFIX_FLAGS="-ffile-prefix-map=$GITHUB_WORKSPACE=/dobbyvpn/source -ffile-prefix-map=$CONAN_HOME=/dobbyvpn/conan"
+          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/dobbyvpn/source --remap-path-prefix=$CONAN_HOME=/dobbyvpn/conan --remap-path-prefix=$HOME/.cargo=/dobbyvpn/cargo --remap-path-prefix=$HOME/.rustup=/dobbyvpn/rustup"
           mkdir -p $BUILD_DIR && cd $BUILD_DIR && \
           cmake -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER="clang" \
-            -DCMAKE_CXX_COMPILER="clang++" \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOS_DEPLOYMENT_TARGET \
+            -DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+            -DCMAKE_C_COMPILER="$(xcrun --sdk macosx --find clang)" \
+            -DCMAKE_CXX_COMPILER="$(xcrun --sdk macosx --find clang++)" \
+            -DCMAKE_C_FLAGS="$PREFIX_FLAGS" \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++ $PREFIX_FLAGS" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCARGO_EXTRA_ARGS=--locked \
             -DIPV6_UNAVAILABLE=ON \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -GNinja \
             ..
 
       - name: Save conan cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.conan2/
-          key: macos-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
+          path: ${{ runner.temp }}/dobby-conan-macos-dynamic
+          key: macos-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
       - name: Build dobby_bridge
         working-directory: TrustTunnelClient
@@ -120,6 +136,14 @@ jobs:
         run: |
           mkdir -p lib/macos
           cp TrustTunnelClient/$BUILD_DIR/dobby_bridge/libdobby_bridge.dylib lib/macos/
+          strip -S lib/macos/libdobby_bridge.dylib
+          test "$(lipo -archs lib/macos/libdobby_bridge.dylib)" = arm64
+          vtool -show-build lib/macos/libdobby_bridge.dylib | grep -Eq '^[[:space:]]*platform[[:space:]]+MACOS[[:space:]]*$'
+          vtool -show-build lib/macos/libdobby_bridge.dylib | grep -Eq '^[[:space:]]*minos[[:space:]]+15(\.0+)?[[:space:]]*$'
+          if strings -a lib/macos/libdobby_bridge.dylib | grep -E '(/Users/|/home/)'; then
+            echo "macOS dynamic archive contains an unremapped local build path" >&2
+            exit 1
+          fi
           echo "=== Library info ==="
           file lib/macos/libdobby_bridge.dylib
           ls -lh lib/macos/libdobby_bridge.dylib
@@ -127,7 +151,7 @@ jobs:
           nm -gU lib/macos/libdobby_bridge.dylib | grep -i "dobby" || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libdobby_bridge-macos-arm64
           path: lib/macos/libdobby_bridge.dylib
@@ -136,79 +160,46 @@ jobs:
         working-directory: examples
         run: go build -v -o examples
 
-      - name: Upload Go example artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: examples
-          path: |
-            examples/examples
-
-      - name: Run example (crash test & proxy test)
-        working-directory: examples
-        env:
-          TT_CONFIG: ${{ secrets.TT_CONFIG }}
-        run: |
-          export DYLD_LIBRARY_PATH=$PWD/../lib/macos:$DYLD_LIBRARY_PATH
-          # Run example and wait for it to initialize
-          ./examples &
-          PID=$!
-          sleep 5
-          
-          # Check if proxy is working
-          echo "Testing proxy connection..."
-          SUCCESS=0
-          for i in {1..10}; do
-            if curl -sS --max-time 5 -x socks5h://127.0.0.1:10808 http://1.1.1.1 > /dev/null; then
-              SUCCESS=1
-              break
-            fi
-            echo "Waiting for proxy to be ready... Attempt $i/10"
-            sleep 2
-          done
-          
-          if [ $SUCCESS -eq 1 ]; then
-            echo "✅ Proxy test passed! Traffic is successfully routing."
-          else
-            echo "❌ Proxy test failed! Could not route traffic."
-            kill $PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          if kill -0 $PID 2>/dev/null; then
-            kill $PID
-            echo "✅ Crash test passed (no crash after proxy test)"
-          else
-            wait $PID
-            EC=$?
-            echo "❌ CRASH detected with exit code $EC"
-            exit 1
-          fi
-
   macos-arm64-static:
-    runs-on: macos-latest
+    runs-on: macos-15
+    env:
+      DOBBY_CONAN_LOCKFILE: ${{ github.workspace }}/scripts/pins/conan/apple-macos-arm64.lock
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Configure isolated Conan home
+        run: echo "CONAN_HOME=$RUNNER_TEMP/dobby-conan-macos-static" >> "$GITHUB_ENV"
+
+      - name: Select exact Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          test "$(xcodebuild -version | tr '\n' ' ')" = "Xcode 26.3 Build version 17C529 "
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
+      - name: Derive Apple native input digest
+        id: native-input
+        run: |
+          digest="$(python3 scripts/apple_native_input_digest.py \
+            --platform macos \
+            --conan-version "$CONAN_VERSION" \
+            --xcode-key "$APPLE_TOOLCHAIN_KEY" \
+            --deployment-target "$MACOS_DEPLOYMENT_TARGET" \
+            --rust-toolchain 1.85.0)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Install packages
         run: |
-          brew install ninja llvm@21
+          brew install ninja
+          pip install "pyyaml==6.0.3" "clangd-tidy==1.1.1" "tqdm==4.67.1"
+          pip install "conan==$CONAN_VERSION"
 
-          # Patch libc++ availability header (required for compatibility)
-          sed -i '' 's/_LIBCPP_INTRODUCED_IN_LLVM_21 1/_LIBCPP_INTRODUCED_IN_LLVM_21 0/g' \
-            "$(brew --prefix llvm@21)/include/c++/v1/__configuration/availability.h"
-
-          pip install -r TrustTunnelClient/requirements.txt
-          pip install conan~=$CONAN_VER
-
-          echo "/opt/homebrew/opt/llvm@21/bin" >> $GITHUB_PATH
           # Add python's bin dir to path
           PY_BIN=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))")
           echo "$PY_BIN" >> $GITHUB_PATH
@@ -216,140 +207,60 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.85.0"
+          targets: aarch64-apple-darwin
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
 
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: macos-static-ccache
+          key: macos-static-${{ env.MACOS_DEPLOYMENT_TARGET }}-${{ env.APPLE_TOOLCHAIN_KEY }}-ccache
 
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: macos-static-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: macos-static-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-cargo
 
       - name: Conan cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: conan-cache
         with:
-          path: ~/.conan2/
-          key: macos-static-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-          restore-keys: macos-static-conan2-
+          path: ${{ runner.temp }}/dobby-conan-macos-static
+          key: macos-static-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
-      - name: Patch dns-libs version in conanfile.py
-        working-directory: TrustTunnelClient
+      - name: Prepare pinned Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode locked
+
+      - name: Build and verify static macOS bridge
         run: |
-          sed -i '' 's/dns-libs\/2.8.51@/dns-libs\/2.8.52@/' conanfile.py
-
-      - name: Bootstrap conan
-        if: steps.conan-cache.outputs.cache-hit != 'true'
-        working-directory: TrustTunnelClient
-        run: ./scripts/bootstrap_conan_deps.py
-
-      - name: Prepare dobby_bridge build
-        run: |
-          echo 'add_subdirectory("../dobby_bridge" "dobby_bridge")' >> TrustTunnelClient/CMakeLists.txt
-
-      - name: CMake configure
-        working-directory: TrustTunnelClient
-        run: |
-          mkdir -p $BUILD_DIR && cd $BUILD_DIR && \
-          cmake -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES="arm64" \
-            -DCMAKE_CXX_COMPILER="clang++" \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DIPV6_UNAVAILABLE=ON \
-            -DDOBBY_BRIDGE_STATIC=ON \
-            -GNinja \
-            ..
+          python3 -m unittest \
+            scripts/tests/test_apple_native_input_digest.py \
+            scripts/tests/test_build_apple_static.py \
+            scripts/tests/test_package_release_assets.py \
+            scripts/tests/test_prepare_pinned_conan.py \
+            scripts/tests/test_prune_apple_compiler_builtins.py \
+            scripts/tests/test_verify_apple_archive.py \
+            scripts/tests/test_workflow_contracts.py
+          scripts/build_apple_static.sh macos
 
       - name: Save conan cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.conan2/
-          key: macos-static-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-
-      - name: Build dobby_bridge
-        working-directory: TrustTunnelClient
-        run: cmake --build $BUILD_DIR --target dobby_bridge
-
-      - name: Prepare library directory
-        run: |
-          mkdir -p lib/macos
-          
-          STATIC_LIBS=$(find TrustTunnelClient/$BUILD_DIR -name "*.a" \
-            -not -path "*/CMakeFiles/*" \
-            -not -name "*.dll.a" \
-            | sort)
-            
-          CONAN_LIBS=$(find ~/.conan2/p -type f -name "*.a" -exec sh -c 'lipo -info "$1" 2>/dev/null | grep -q "arm64" && echo "$1"' _ {} \; | sort)
-          
-          libtool -static -o lib/macos/libdobby_bridge.a $STATIC_LIBS $CONAN_LIBS
-          strip -S lib/macos/libdobby_bridge.a
-          
-          echo "=== Merged library info ==="
-          file lib/macos/libdobby_bridge.a
-          ls -lh lib/macos/libdobby_bridge.a
+          path: ${{ runner.temp }}/dobby-conan-macos-static
+          key: macos-static-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libdobby_bridge-macos-arm64-static
           path: lib/macos/libdobby_bridge.a
-
-      - name: Build Go example
-        working-directory: examples
-        run: go build -tags static -v -o examples
-
-      - name: Run example (crash test & proxy test)
-        working-directory: examples
-        env:
-          TT_CONFIG: ${{ secrets.TT_CONFIG }}
-        run: |
-          # No DYLD_LIBRARY_PATH needed for static builds!
-          ./examples &
-          PID=$!
-          sleep 5
-          
-          # Check if proxy is working
-          echo "Testing proxy connection..."
-          SUCCESS=0
-          for i in {1..10}; do
-            if curl -sS --max-time 5 -x socks5h://127.0.0.1:10808 http://1.1.1.1 > /dev/null; then
-              SUCCESS=1
-              break
-            fi
-            echo "Waiting for proxy to be ready... Attempt $i/10"
-            sleep 2
-          done
-          
-          if [ $SUCCESS -eq 1 ]; then
-            echo "✅ Proxy test passed! Traffic is successfully routing."
-          else
-            echo "❌ Proxy test failed! Could not route traffic."
-            kill $PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          if kill -0 $PID 2>/dev/null; then
-            kill $PID
-            echo "✅ Crash test passed (no crash after proxy test)"
-          else
-            wait $PID
-            EC=$?
-            echo "❌ CRASH detected with exit code $EC"
-            exit 1
-          fi

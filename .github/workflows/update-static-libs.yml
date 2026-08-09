@@ -4,89 +4,126 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to fetch artifacts from'
+        description: Target branch whose exact head owns the source inputs
         required: true
-        default: 'main'
+        default: main
+      source_sha:
+        description: Full source commit shared by every selected build run
+        required: true
+      android_run_id:
+        description: Successful Build Android run ID at source_sha
+        required: true
+      ios_run_id:
+        description: Successful Build iOS run ID at source_sha
+        required: true
+      macos_run_id:
+        description: Successful Build macOS run ID at source_sha
+        required: true
 
 jobs:
   update-libs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      TARGET_BRANCH: ${{ inputs.branch }}
+      ANDROID_RUN_ID: ${{ inputs.android_run_id }}
+      IOS_RUN_ID: ${{ inputs.ios_run_id }}
+      MACOS_RUN_ID: ${{ inputs.macos_run_id }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout exact target head
+        uses: actions/checkout@v5
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
 
-      - name: Download Artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify source and selected runs
         run: |
-          # Function to fetch latest successful run ID for a workflow
-          get_latest_run() {
-            local workflow=$1
-            local branch="${{ github.event.inputs.branch || 'main' }}"
-            gh run list --workflow="$workflow" --branch="$branch" --status=success --limit=1 --json databaseId --jq '.[0].databaseId'
+          set -euo pipefail
+          git check-ref-format --branch "$TARGET_BRANCH"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+          verify_run() {
+            local run_id="$1"
+            local workflow_name="$2"
+            test "$(gh run view "$run_id" --json headSha --jq .headSha)" = "$SOURCE_SHA"
+            test "$(gh run view "$run_id" --json conclusion --jq .conclusion)" = success
+            test "$(gh run view "$run_id" --json workflowName --jq .workflowName)" = "$workflow_name"
           }
-          
-          echo "=== Fetching Android Static Libraries ==="
-          mkdir -p lib/android/arm64-v8a
-          ANDROID_RUN=$(get_latest_run "build-android.yml")
-          if [ -n "$ANDROID_RUN" ]; then
-            echo "Downloading Android artifacts from run $ANDROID_RUN"
-            rm -f lib/android/arm64-v8a/libdobby_bridge.a
-            gh run download "$ANDROID_RUN" -n libdobby_bridge-android-arm64-v8a-static -D lib/android/arm64-v8a || echo "Failed to download Android artifact"
-          else
-            echo "No successful Android runs found."
-          fi
-          
-          echo "=== Fetching iOS Static Libraries ==="
-          mkdir -p lib/ios
-          IOS_RUN=$(get_latest_run "build-ios.yml")
-          if [ -n "$IOS_RUN" ]; then
-            echo "Downloading iOS artifacts from run $IOS_RUN"
-            rm -f lib/ios/libdobby_bridge.a
-            gh run download "$IOS_RUN" -n libdobby_bridge-ios-arm64 -D lib/ios || echo "Failed to download iOS artifact"
-          else
-            echo "No successful iOS runs found."
-          fi
-          
-          echo "=== Fetching MacOS Static Libraries ==="
-          mkdir -p lib/macos
-          MACOS_RUN=$(get_latest_run "build-macos.yml")
-          if [ -n "$MACOS_RUN" ]; then
-            echo "Downloading MacOS artifacts from run $MACOS_RUN"
-            rm -f lib/macos/libdobby_bridge.a
-            gh run download "$MACOS_RUN" -n libdobby_bridge-macos-arm64-static -D lib/macos || echo "Failed to download MacOS artifact"
-          else
-            echo "No successful MacOS runs found."
-          fi
-          
-          echo "=== Fetching Windows Libraries ==="
-          mkdir -p lib/windows
-          WINDOWS_RUN=$(get_latest_run "build-windows.yml")
-          if [ -n "$WINDOWS_RUN" ]; then
-            echo "Downloading Windows artifacts from run $WINDOWS_RUN"
-            rm -f lib/windows/dobby_bridge.lib lib/windows/dobby_bridge.dll
-            gh run download "$WINDOWS_RUN" -n dobby_bridge-windows-x86_64 -D lib/windows || echo "Failed to download Windows artifact"
-            # We only want to commit the .lib file
-            rm -f lib/windows/dobby_bridge.dll
-          else
-            echo "No successful Windows runs found."
+
+          verify_run "$ANDROID_RUN_ID" "Build Android"
+          verify_run "$IOS_RUN_ID" "Build iOS"
+          verify_run "$MACOS_RUN_ID" "Build macOS"
+
+      - name: Download exact static artifacts
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/static-libraries"
+          mkdir -p "$stage/android" "$stage/ios" "$stage/macos"
+          gh run download "$ANDROID_RUN_ID" \
+            --name libdobby_bridge-android-arm64-v8a-static \
+            --dir "$stage/android"
+          gh run download "$IOS_RUN_ID" \
+            --name libdobby_bridge-ios-arm64 \
+            --dir "$stage/ios"
+          gh run download "$MACOS_RUN_ID" \
+            --name libdobby_bridge-macos-arm64-static \
+            --dir "$stage/macos"
+
+          verify_single_archive() {
+            local directory="$1"
+            local expected="$directory/libdobby_bridge.a"
+            local entries
+            entries="$(find "$directory" -mindepth 1 -printf '%P\n' | LC_ALL=C sort)"
+            test "$entries" = "libdobby_bridge.a"
+            test -f "$expected"
+            test ! -L "$expected"
+          }
+          verify_single_archive "$stage/android"
+          verify_single_archive "$stage/ios"
+          verify_single_archive "$stage/macos"
+          install -D -m 0644 "$stage/android/libdobby_bridge.a" lib/android/arm64-v8a/libdobby_bridge.a
+          install -D -m 0644 "$stage/ios/libdobby_bridge.a" lib/ios/libdobby_bridge.a
+          install -D -m 0644 "$stage/macos/libdobby_bridge.a" lib/macos/libdobby_bridge.a
+
+          android_sha="$(sha256sum lib/android/arm64-v8a/libdobby_bridge.a | awk '{print $1}')"
+          ios_sha="$(sha256sum lib/ios/libdobby_bridge.a | awk '{print $1}')"
+          macos_sha="$(sha256sum lib/macos/libdobby_bridge.a | awk '{print $1}')"
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg android_run_id "$ANDROID_RUN_ID" \
+            --arg android_sha256 "$android_sha" \
+            --arg ios_run_id "$IOS_RUN_ID" \
+            --arg ios_sha256 "$ios_sha" \
+            --arg macos_run_id "$MACOS_RUN_ID" \
+            --arg macos_sha256 "$macos_sha" \
+            '{schema: 1, source_sha: $source_sha, artifacts: {
+              android: {run_id: $android_run_id, sha256: $android_sha256},
+              ios: {run_id: $ios_run_id, sha256: $ios_sha256},
+              macos: {run_id: $macos_run_id, sha256: $macos_sha256}
+            }}' > lib/static-libraries.provenance.json
+
+      - name: Commit and push exact artifacts
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            lib/android/arm64-v8a/libdobby_bridge.a \
+            lib/ios/libdobby_bridge.a \
+            lib/macos/libdobby_bridge.a \
+            lib/static-libraries.provenance.json
+
+          if git diff --staged --quiet; then
+            echo "No static-library changes detected"
+            exit 0
           fi
 
-      - name: Commit and Push Changes
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          git add lib/
-          
-          if ! git diff --staged --quiet; then
-            git commit -m "chore: update static libraries from platform workflows"
-            git push origin HEAD:${{ github.ref_name }}
-          else
-            echo "No changes detected in static libraries"
-          fi
+          git commit -m "chore: update exact-source static libraries"
+          git fetch origin "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH"
+          test "$(git rev-parse "origin/$TARGET_BRANCH")" = "$SOURCE_SHA"
+          git push origin "HEAD:$TARGET_BRANCH"

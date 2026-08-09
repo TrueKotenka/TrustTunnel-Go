@@ -7,161 +7,113 @@ on:
   workflow_dispatch:
 
 env:
-  CONAN_VER: 2.12
+  CONAN_VERSION: 2.12.2
   BUILD_DIR: build
+  IOS_DEPLOYMENT_TARGET: "15.6"
+  IPHONEOS_DEPLOYMENT_TARGET: "15.6"
+  APPLE_TOOLCHAIN_KEY: xcode-26.3-17C529
 
 jobs:
   ios-arm64:
-    runs-on: macos-latest
+    runs-on: macos-15
+    env:
+      DOBBY_CONAN_LOCKFILE: ${{ github.workspace }}/scripts/pins/conan/apple-ios-arm64.lock
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
+      - name: Configure isolated Conan home
+        run: echo "CONAN_HOME=$RUNNER_TEMP/dobby-conan-ios" >> "$GITHUB_ENV"
+
+      - name: Select exact Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          test "$(xcodebuild -version | tr '\n' ' ')" = "Xcode 26.3 Build version 17C529 "
+
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version-file: go.mod
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
+      - name: Derive Apple native input digest
+        id: native-input
+        run: |
+          digest="$(python3 scripts/apple_native_input_digest.py \
+            --platform ios \
+            --conan-version "$CONAN_VERSION" \
+            --xcode-key "$APPLE_TOOLCHAIN_KEY" \
+            --deployment-target "$IOS_DEPLOYMENT_TARGET" \
+            --rust-toolchain 1.85.0)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Install packages
         run: |
-          brew install ninja llvm@21
+          brew install ninja
+          pip install "pyyaml==6.0.3" "clangd-tidy==1.1.1" "tqdm==4.67.1"
+          pip install "conan==$CONAN_VERSION"
 
-          # Patch libc++ availability header (required for compatibility)
-          sed -i '' 's/_LIBCPP_INTRODUCED_IN_LLVM_21 1/_LIBCPP_INTRODUCED_IN_LLVM_21 0/g' \
-            "$(brew --prefix llvm@21)/include/c++/v1/__configuration/availability.h"
-
-          pip install -r TrustTunnelClient/requirements.txt
-          pip install conan~=$CONAN_VER
-
-          echo "/opt/homebrew/opt/llvm@21/bin" >> $GITHUB_PATH
           PY_BIN=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))")
           echo "$PY_BIN" >> $GITHUB_PATH
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: "1.85.0"
           targets: aarch64-apple-ios
 
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: ios-ccache
+          key: ios-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ env.APPLE_TOOLCHAIN_KEY }}-ccache
 
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ios-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ios-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-cargo
 
       - name: Conan cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: conan-cache
         with:
-          path: ~/.conan2/
-          key: ios-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-          restore-keys: ios-conan2-
+          path: ${{ runner.temp }}/dobby-conan-ios
+          key: ios-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
-      - name: Patch dns-libs version in conanfile.py
-        working-directory: TrustTunnelClient
+      - name: Prepare pinned Conan recipes and provider
+        run: python3 scripts/prepare_pinned_conan.py --trusttunnel TrustTunnelClient --mode locked
+
+      - name: Build and verify iOS bridge
         run: |
-          # Update dns-libs version from 2.8.51 to 2.8.52 (upstream TrustTunnel hasn't updated yet)
-          sed -i '' 's/dns-libs\/2.8.51@/dns-libs\/2.8.52@/' conanfile.py
-          echo "Patched conanfile.py to use dns-libs 2.8.52"
-          grep "dns-libs" conanfile.py
-
-      - name: Bootstrap conan
-        if: steps.conan-cache.outputs.cache-hit != 'true'
-        working-directory: TrustTunnelClient
-        run: ./scripts/bootstrap_conan_deps.py
-
-      - name: Prepare dobby_bridge build
-        run: |
-          echo 'add_subdirectory("../dobby_bridge" "dobby_bridge")' >> TrustTunnelClient/CMakeLists.txt
-
-      - name: CMake configure (iOS cross-compile)
-        working-directory: TrustTunnelClient
-        run: |
-          IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          mkdir -p $BUILD_DIR && cd $BUILD_DIR && \
-          cmake -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-            -DCMAKE_OSX_SYSROOT=$IOS_SDK \
-            -DCMAKE_C_COMPILER="clang" \
-            -DCMAKE_CXX_COMPILER="clang++" \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DIPV6_UNAVAILABLE=ON \
-            -DDOBBY_BRIDGE_STATIC=ON \
-            -GNinja \
-            ..
+          python3 -m unittest \
+            scripts/tests/test_apple_native_input_digest.py \
+            scripts/tests/test_build_apple_static.py \
+            scripts/tests/test_package_release_assets.py \
+            scripts/tests/test_prepare_pinned_conan.py \
+            scripts/tests/test_prune_apple_compiler_builtins.py \
+            scripts/tests/test_verify_apple_archive.py \
+            scripts/tests/test_workflow_contracts.py
+          scripts/build_apple_static.sh ios
 
       - name: Save conan cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: steps.conan-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.conan2/
-          key: ios-conan2-${{ hashFiles('TrustTunnelClient/conanfile.py') }}
-
-      - name: Build dobby_bridge
-        working-directory: TrustTunnelClient
-        run: cmake --build $BUILD_DIR --target dobby_bridge
-
-      - name: Create merged static library
-        run: |
-          mkdir -p lib/ios
-
-          # Merge all static libraries into one fat archive so the consumer
-          # only needs to link a single .a file.
-          STATIC_LIBS=$(find TrustTunnelClient/$BUILD_DIR -name "*.a" \
-            -not -path "*/CMakeFiles/*" \
-            -not -name "*.dll.a" \
-            | sort)
-
-          echo "=== TrustTunnel Static libraries found ==="
-          echo "$STATIC_LIBS"
-
-          # Find Conan static libraries (filtering for arm64 to avoid host tool libraries)
-          CONAN_LIBS=$(find ~/.conan2/p -type f -name "*.a" -exec sh -c 'lipo -info "$1" 2>/dev/null | grep -q "arm64" && echo "$1"' _ {} \; | sort)
-          
-          echo "=== Conan Static libraries found ==="
-          echo "$CONAN_LIBS"
-
-          libtool -static -o lib/ios/libdobby_bridge.a $STATIC_LIBS $CONAN_LIBS
-          strip -S lib/ios/libdobby_bridge.a
-
-          echo "=== Merged library info ==="
-          file lib/ios/libdobby_bridge.a
-          ls -lh lib/ios/libdobby_bridge.a
-          echo "=== Exported symbols ==="
-          nm -gU lib/ios/libdobby_bridge.a 2>/dev/null | grep -i "dobby" || true
+          path: ${{ runner.temp }}/dobby-conan-ios
+          key: ios-${{ runner.arch }}-${{ steps.native-input.outputs.digest }}-conan
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libdobby_bridge-ios-arm64
           path: lib/ios/libdobby_bridge.a
-
-      - name: Build Go example (verify linking)
-        working-directory: examples
-        run: |
-          # Build the Go example for iOS arm64 using the iOS SDK toolchain.
-          # We don't run it (requires simulator or device), but we verify it links perfectly.
-          CGO_ENABLED=1 GOOS=ios GOARCH=arm64 \
-            CC="$(xcrun --sdk iphoneos --find clang) -isysroot $(xcrun --sdk iphoneos --show-sdk-path)" \
-            CXX="$(xcrun --sdk iphoneos --find clang++) -isysroot $(xcrun --sdk iphoneos --show-sdk-path)" \
-            go build -v -tags static -o examples_ios
