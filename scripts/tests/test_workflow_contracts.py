@@ -133,6 +133,18 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(source.count('go-version-file: "go.mod"'), 2)
         self.assertNotIn("go-version: '1.25'", source)
 
+    def test_windows_declares_the_exact_static_msvc_runtime(self) -> None:
+        source = (WORKFLOWS / "build-windows.yml").read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `"),
+            1,
+        )
+        trusttunnel = (ROOT / "TrustTunnelClient" / "CMakeLists.txt").read_text(encoding="utf-8")
+        bridge = (ROOT / "dobby_bridge" / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)", trusttunnel)
+        self.assertIn('MSVC_RUNTIME_LIBRARY "MultiThreaded"', bridge)
+        self.assertNotIn("MultiThreadedDLL", source + trusttunnel + bridge)
+
     def test_documentation_marks_non_apple_conan_graphs_unlocked(self) -> None:
         source = (ROOT / "scripts" / "README.md").read_text(encoding="utf-8")
         self.assertIn("--mode locked", source)

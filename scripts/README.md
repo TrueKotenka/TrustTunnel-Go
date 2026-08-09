@@ -89,6 +89,11 @@ Compiler versions used by the pinned hosted images but absent from Conan
 2.12.2's public settings (GCC 15, MSVC 195, Clang 21, and Apple Clang 17) are
 added through the same generated, hash-bound settings input. This neither
 upgrades Conan nor accepts other unpinned compiler versions.
+The hosted Windows Release build also declares CMake's `MultiThreaded` runtime
+before dependency resolution, so the generated Conan host profile is bound to
+`msvc.runtime=static` and `msvc.runtime_type=Release`. This matches the existing
+TrustTunnel and delivered bridge target settings instead of depending on an
+image-specific implicit default.
 
 ## Updating tracked static libraries
 

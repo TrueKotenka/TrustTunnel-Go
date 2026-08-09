@@ -89,6 +89,7 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER="cl.exe" `
             -DCMAKE_CXX_COMPILER="cl.exe" `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_C_COMPILER_LAUNCHER=ccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
             -DIPV6_UNAVAILABLE=ON `
