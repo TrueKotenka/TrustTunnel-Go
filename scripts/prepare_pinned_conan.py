@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -219,19 +220,27 @@ def pin_nested_recipe_source(
 
 
 def pin_native_libs_common_recipe(
-    nlc: Path, *, propagate_provider: bool = False,
+    nlc: Path, *, provider_patch: str | None = None,
 ) -> None:
     pin_nested_recipe_source(nlc, NLC_SOURCE_METHOD, NLC_COMMIT, "NativeLibsCommon")
-    if not propagate_provider:
+    if provider_patch is None:
         return
+    if not provider_patch:
+        raise PreparationError("NativeLibsCommon provider patch is empty")
 
     recipe_path = nlc / "conanfile.py"
     recipe = recipe_path.read_text(encoding="utf-8")
+    patch_relative = "patches/dobby-msvc-195-compat.patch"
+    patch_path = nlc / patch_relative
+    if patch_path.exists() or patch_path.is_symlink():
+        raise PreparationError("NativeLibsCommon provider patch destination is not empty")
+    patch_path.parent.mkdir(exist_ok=True)
+    patch_path.write_text(provider_patch, encoding="utf-8")
     recipe = replace_exact(
         recipe,
         "    exports_sources = patch_files\n",
-        '    exports_sources = patch_files + ["cmake/conan_provider.cmake"]\n',
-        "NativeLibsCommon provider export contract",
+        f'    exports_sources = patch_files + ["{patch_relative}"]\n',
+        "NativeLibsCommon provider patch export contract",
     )
     checkout_verified = (
         f'        self.run("git merge-base --is-ancestor HEAD {NLC_COMMIT}")\n'
@@ -240,10 +249,8 @@ def pin_native_libs_common_recipe(
         recipe,
         checkout_verified,
         checkout_verified
-        + '        copy(self, "conan_provider.cmake",\n'
-        + '             src=join(self.export_sources_folder, "cmake"),\n'
-        + '             dst=join(self.source_folder, "cmake"))\n',
-        "NativeLibsCommon provider restore point",
+        + f'        patch(self, patch_file="{patch_relative}", strip=1)\n',
+        "NativeLibsCommon provider patch point",
     )
     recipe_path.write_text(recipe, encoding="utf-8")
 
@@ -346,9 +353,10 @@ def enforce_conan_lockfile_provider(provider: Path) -> None:
     provider.write_text(source, encoding="utf-8")
 
 
-def enforce_msvc_195_compat_provider(provider: Path) -> None:
+def enforce_msvc_195_compat_provider(provider: Path) -> str:
     """Make every recursive Windows profile use Conan 2.12's newest identity."""
-    source = provider.read_text(encoding="utf-8")
+    original = provider.read_text(encoding="utf-8")
+    source = original
     source = replace_exact(
         source,
         PROVIDER_MSVC_VERSION_POINT,
@@ -375,11 +383,22 @@ def enforce_msvc_195_compat_provider(provider: Path) -> None:
         "MSVC compatibility activation insertion point",
     )
     provider.write_text(source, encoding="utf-8")
+    provider_patch = "".join(
+        difflib.unified_diff(
+            original.splitlines(keepends=True),
+            source.splitlines(keepends=True),
+            fromfile="a/cmake/conan_provider.cmake",
+            tofile="b/cmake/conan_provider.cmake",
+        )
+    )
+    if not provider_patch:
+        raise PreparationError("MSVC compatibility provider patch is empty")
+    return provider_patch
 
 
 def configure_conan_provider(
     provider: Path, mode: str, *, msvc_195_compat: bool = False,
-) -> None:
+) -> str | None:
     """Apply the only provider mutation allowed by the selected mode."""
     if msvc_195_compat and mode != "unlocked":
         raise PreparationError("MSVC 195 compatibility requires unlocked mode")
@@ -388,7 +407,8 @@ def configure_conan_provider(
     elif mode != "unlocked":
         raise PreparationError("unknown Conan preparation mode")
     if msvc_195_compat:
-        enforce_msvc_195_compat_provider(provider)
+        return enforce_msvc_195_compat_provider(provider)
+    return None
 
 
 def pin_dns_libs_recipe(dns: Path, nlc: Path) -> None:
@@ -469,13 +489,13 @@ def prepare(trusttunnel: Path, mode: str, *, msvc_195_compat: bool = False) -> N
         nlc = root / "native-libs-common"
         checkout(DNSLIBS_URL, DNSLIBS_COMMIT, dns)
         checkout(NLC_URL, NLC_COMMIT, nlc)
-        configure_conan_provider(
+        provider_patch = configure_conan_provider(
             nlc / "cmake" / "conan_provider.cmake",
             mode,
             msvc_195_compat=msvc_195_compat,
         )
         pin_dns_libs_recipe(dns, nlc)
-        pin_native_libs_common_recipe(nlc, propagate_provider=msvc_195_compat)
+        pin_native_libs_common_recipe(nlc, provider_patch=provider_patch)
         pin_quiche_recipe(nlc)
         replace_generated_provider(nlc, trusttunnel)
         prepare_default_conan_profile()

@@ -101,9 +101,11 @@ the pinned Conan provider to use the binary-compatible 194 package identity in
 every recursively generated host profile. Those profiles retain the exact v145
 compiler paths and disable redundant Visual Studio activation, so Conan cannot
 mistake identity 194 for a request to find Visual Studio 17 / v143. The v145
-compiler, linker, and static runtime still perform the real build. Repository
-tests forbid `/GL`, `/LTCG`, and CMake interprocedural optimization because
-those modes require an exact toolset match and would invalidate this narrow
+compiler, linker, and static runtime still perform the real build. An exact
+context patch carries the same provider change through NativeLibsCommon's fresh
+pinned source checkout and fails if its provider source drifts. Repository tests
+forbid `/GL`, `/LTCG`, and CMake interprocedural optimization because those
+modes require an exact toolset match and would invalidate this narrow
 compatibility exception. Remove the exception when the pinned Conan
 implementation fully supports MSVC 195.
 

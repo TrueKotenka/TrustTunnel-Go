@@ -187,7 +187,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            MODULE.configure_conan_provider(
+            provider_patch = MODULE.configure_conan_provider(
                 provider,
                 "unlocked",
                 msvc_195_compat=True,
@@ -201,6 +201,11 @@ class PinnedConanPreparationTests(unittest.TestCase):
                 'string(APPEND PROFILE "tools.microsoft.msbuild:installation_path=\\n")',
                 generated,
             )
+            self.assertIsNotNone(provider_patch)
+            assert provider_patch is not None
+            self.assertIn("--- a/cmake/conan_provider.cmake", provider_patch)
+            self.assertIn("+++ b/cmake/conan_provider.cmake", provider_patch)
+            self.assertIn('+        set(_COMPILER_VERSION "194")', provider_patch)
 
     def test_windows_compatibility_rejects_locked_provider_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -318,7 +323,7 @@ class PinnedConanPreparationTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.PreparationError, "differs from the pinned input"):
                 MODULE.pin_native_libs_common_recipe(checkout)
 
-    def test_windows_native_libs_common_restores_the_recursive_provider(self) -> None:
+    def test_windows_native_libs_common_applies_the_recursive_provider_patch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             checkout = Path(temporary)
             recipe = checkout / "conanfile.py"
@@ -329,21 +334,43 @@ class PinnedConanPreparationTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            MODULE.pin_native_libs_common_recipe(checkout, propagate_provider=True)
+            provider_patch = (
+                "--- a/cmake/conan_provider.cmake\n"
+                "+++ b/cmake/conan_provider.cmake\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n"
+            )
+            MODULE.pin_native_libs_common_recipe(
+                checkout,
+                provider_patch=provider_patch,
+            )
 
             generated = recipe.read_text(encoding="utf-8")
             self.assertIn(
-                'exports_sources = patch_files + ["cmake/conan_provider.cmake"]',
+                'exports_sources = patch_files + ["patches/dobby-msvc-195-compat.patch"]',
                 generated,
             )
-            self.assertIn('copy(self, "conan_provider.cmake"', generated)
-            self.assertLess(
-                generated.index(f"git merge-base --is-ancestor HEAD {MODULE.NLC_COMMIT}"),
-                generated.index('copy(self, "conan_provider.cmake"'),
+            self.assertIn(
+                'patch(self, patch_file="patches/dobby-msvc-195-compat.patch", strip=1)',
+                generated,
+            )
+            patch_call = generated.index(
+                '        patch(self, patch_file="patches/dobby-msvc-195-compat.patch", strip=1)'
             )
             self.assertLess(
-                generated.index('copy(self, "conan_provider.cmake"'),
+                generated.index(f"git merge-base --is-ancestor HEAD {MODULE.NLC_COMMIT}"),
+                patch_call,
+            )
+            self.assertLess(
+                patch_call,
                 generated.index("settings_file.write("),
+            )
+            self.assertEqual(
+                (checkout / "patches" / "dobby-msvc-195-compat.patch").read_text(
+                    encoding="utf-8"
+                ),
+                provider_patch,
             )
 
     def test_pins_nested_dns_libs_source_and_settings(self) -> None:
