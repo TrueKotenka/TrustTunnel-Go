@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "source_sha": "ca41bedd31196f1d4ff8c3f698917465eaa18920",
+  "artifacts": {
+    "android": {
+      "run_id": "31328542829",
+      "sha256": "02c6c5631f1c61ee8632ba0430530407ea1fde623db80e42d42c902a4c6cf3a9"
+    },
+    "ios": {
+      "run_id": "31328542865",
+      "sha256": "9f1aa21bb576d95caa0c125ecd61a4ce97e59eb43213bad25e50901c43e94b67"
+    },
+    "macos": {
+      "run_id": "31328542808",
+      "sha256": "440422db2f3c40830db5184499284bef72ab986e699c9f312c164e807217c023"
+    }
+  }
+}
