@@ -19,6 +19,12 @@ ARCHIVE_INDEX_MEMBERS = frozenset(
 ARCHIVE_MAGIC = b"!<arch>\n"
 ARCHIVE_HEADER_SIZE = 60
 DETERMINISTIC_ARCHIVE_MODE = 0o100644
+CANONICAL_ARCHIVE_METADATA = (
+    (16, 28, b"0           "),
+    (28, 34, b"0     "),
+    (34, 40, b"0     "),
+    (40, 48, b"100644  "),
+)
 
 
 class VerificationError(ValueError):
@@ -101,12 +107,12 @@ def _archive_number(field: bytes, base: int, name: str) -> int:
     return int(value, base)
 
 
-def verify_deterministic_archive(raw: bytes) -> int:
-    """Require canonical Apple libtool -D metadata on every archive member."""
+def _archive_header_offsets(raw: bytes) -> list[int]:
+    """Validate a regular archive's framing and return every header offset."""
     if not raw.startswith(ARCHIVE_MAGIC):
         raise VerificationError("archive magic is invalid")
     offset = len(ARCHIVE_MAGIC)
-    members = 0
+    headers: list[int] = []
     while offset < len(raw):
         end = offset + ARCHIVE_HEADER_SIZE
         if end > len(raw):
@@ -114,16 +120,12 @@ def verify_deterministic_archive(raw: bytes) -> int:
         header = raw[offset:end]
         if header[58:60] != b"`\n":
             raise VerificationError("archive member header trailer is invalid")
-        date = _archive_number(header[16:28], 10, "date")
-        uid = _archive_number(header[28:34], 10, "uid")
-        gid = _archive_number(header[34:40], 10, "gid")
-        mode = _archive_number(header[40:48], 8, "mode")
+        _archive_number(header[16:28], 10, "date")
+        _archive_number(header[28:34], 10, "uid")
+        _archive_number(header[34:40], 10, "gid")
+        _archive_number(header[40:48], 8, "mode")
         size = _archive_number(header[48:58], 10, "size")
-        if date != 0 or uid != 0 or gid != 0 or mode != DETERMINISTIC_ARCHIVE_MODE:
-            raise VerificationError(
-                "archive member metadata is not deterministic "
-                f"(date={date} uid={uid} gid={gid} mode={mode:o})"
-            )
+        headers.append(offset)
         offset = end + size
         if offset > len(raw):
             raise VerificationError("archive member data is truncated")
@@ -131,10 +133,35 @@ def verify_deterministic_archive(raw: bytes) -> int:
             if offset >= len(raw) or raw[offset : offset + 1] != b"\n":
                 raise VerificationError("archive member padding is invalid")
             offset += 1
-        members += 1
-    if members == 0:
+    if not headers:
         raise VerificationError("archive contains no members")
-    return members
+    return headers
+
+
+def canonicalize_archive_metadata(raw: bytes) -> bytes:
+    """Normalize only date, uid, gid, and mode in every validated header."""
+    normalized = bytearray(raw)
+    for offset in _archive_header_offsets(raw):
+        for start, end, value in CANONICAL_ARCHIVE_METADATA:
+            normalized[offset + start : offset + end] = value
+    return bytes(normalized)
+
+
+def verify_deterministic_archive(raw: bytes) -> int:
+    """Require canonical metadata on every Apple archive member."""
+    headers = _archive_header_offsets(raw)
+    for offset in headers:
+        header = raw[offset : offset + ARCHIVE_HEADER_SIZE]
+        date = _archive_number(header[16:28], 10, "date")
+        uid = _archive_number(header[28:34], 10, "uid")
+        gid = _archive_number(header[34:40], 10, "gid")
+        mode = _archive_number(header[40:48], 8, "mode")
+        if date != 0 or uid != 0 or gid != 0 or mode != DETERMINISTIC_ARCHIVE_MODE:
+            raise VerificationError(
+                "archive member metadata is not deterministic "
+                f"(date={date} uid={uid} gid={gid} mode={mode:o})"
+            )
+    return len(headers)
 
 
 def verify(
@@ -172,10 +199,15 @@ def main() -> int:
     parser.add_argument("--archive", required=True, type=Path)
     parser.add_argument("--platform", required=True, choices=sorted(PLATFORMS))
     parser.add_argument("--maximum-deployment-target", required=True)
+    parser.add_argument("--canonicalize-metadata", action="store_true")
     args = parser.parse_args()
     try:
         archive = args.archive.resolve(strict=True)
-        deterministic_members = verify_deterministic_archive(archive.read_bytes())
+        raw = archive.read_bytes()
+        if args.canonicalize_metadata:
+            archive.write_bytes(canonicalize_archive_metadata(raw))
+            raw = archive.read_bytes()
+        deterministic_members = verify_deterministic_archive(raw)
         completed = subprocess.run(
             ["xcrun", "otool", "-l", str(archive)],
             check=True,

@@ -35,9 +35,11 @@ The build script refuses to reuse a build directory. It preserves dependency
 cache archives, sanitizes only isolated iOS staging copies, verifies every
 non-index archive member's Apple platform and deployment target, and links a
 small Go consumer before succeeding. Apple `libtool` and `strip` run in their
-deterministic `-D` modes, and the verifier requires canonical zero date, uid,
-gid, and mode metadata on every final archive member. Compiler path remapping
-and a final archive scan prevent owner-local source, Conan, or Cargo paths from
+deterministic `-D` modes. Because cctools preserves uid/gid when merging members
+from existing archives, the final verifier canonicalizes only the four archive
+header metadata fields, then requires zero date/uid/gid and mode `0100644` on
+every member before any consumer link or upload. Compiler path remapping and a
+final archive scan prevent owner-local source, Conan, or Cargo paths from
 entering the published binaries. Preparation materializes the native Conan
 build profile before CMake configuration and applies the exact fail-closed
 TrustTunnel DNS requirement represented by the checked Conan graph, so the

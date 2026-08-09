@@ -63,6 +63,29 @@ class AppleArchiveVerificationTests(unittest.TestCase):
                 with self.assertRaisesRegex(MODULE.VerificationError, "not deterministic"):
                     MODULE.verify_deterministic_archive(raw)
 
+    def test_canonicalizes_only_validated_archive_metadata(self) -> None:
+        extended_index = b"__.SYMDEF" + (b"\0" * 11) + b"index"
+        raw = (
+            MODULE.ARCHIVE_MAGIC
+            + archive_member(
+                extended_index,
+                name="#1/20",
+                date=1786300000,
+                uid=501,
+                gid=20,
+                mode=0o100600,
+            )
+            + archive_member(b"object", date=1786300001, uid=501, gid=20)
+        )
+        expected = (
+            MODULE.ARCHIVE_MAGIC
+            + archive_member(extended_index, name="#1/20")
+            + archive_member(b"object")
+        )
+        normalized = MODULE.canonicalize_archive_metadata(raw)
+        self.assertEqual(normalized, expected)
+        self.assertEqual(MODULE.verify_deterministic_archive(normalized), 2)
+
     def test_rejects_truncated_archive_member_data(self) -> None:
         raw = MODULE.ARCHIVE_MAGIC + archive_member(b"object")[:-1]
         with self.assertRaisesRegex(MODULE.VerificationError, "truncated|padding"):
@@ -72,6 +95,8 @@ class AppleArchiveVerificationTests(unittest.TestCase):
         raw = MODULE.ARCHIVE_MAGIC + archive_member(b"object", date=-1)
         with self.assertRaisesRegex(MODULE.VerificationError, "invalid date"):
             MODULE.verify_deterministic_archive(raw)
+        with self.assertRaisesRegex(MODULE.VerificationError, "invalid date"):
+            MODULE.canonicalize_archive_metadata(raw)
 
     def test_accepts_every_member_at_or_below_limit(self) -> None:
         records = MODULE.parse_otool(metadata(2, "13.0", "a.o") + metadata(2, "15.6", "b.o"))

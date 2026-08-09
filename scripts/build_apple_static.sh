@@ -208,7 +208,8 @@ install -m 0644 "$merged" "$output"
 python3 "$root/scripts/verify_apple_archive.py" \
   --archive "$output" \
   --platform "$platform" \
-  --maximum-deployment-target "$deployment_target"
+  --maximum-deployment-target "$deployment_target" \
+  --canonicalize-metadata
 readonly strings_inventory="$build/archive-strings.txt"
 strings "$output" > "$strings_inventory" || {
   echo "Apple archive local-path scan failed" >&2

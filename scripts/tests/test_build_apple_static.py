@@ -69,6 +69,7 @@ class AppleStaticBuildContractTests(unittest.TestCase):
     def test_final_archive_uses_deterministic_apple_tools(self) -> None:
         self.assertIn('libtool -static -D -o "$merged"', self.source)
         self.assertIn('strip -S -D "$merged"', self.source)
+        self.assertIn("--canonicalize-metadata", self.source)
         self.assertNotIn('libtool -static -o "$merged"', self.source)
 
 
